@@ -10,44 +10,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build Contracts
+  build-and-test:
+    name: Build and Test Contracts
     runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-        
-    - name: Add wasm32 target
-      run: rustup target add wasm32-unknown-unknown
-      
-    - name: Build contracts
-      run: cargo build --verbose
-      
-    - name: Build WASM
-      run: cargo build -p reputation-contract --target wasm32-unknown-unknown --release
 
-  test:
-    name: Test Contracts
-    runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-        
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # creditline-contract embeds the four dependency WASMs via
+      # soroban_sdk::contractimport!, so those WASMs must exist before
+      # creditline compiles. Build them individually first.
+      - name: Build dependency WASMs first
+        run: |
+          cargo build --target wasm32-unknown-unknown --release \
+            -p liquidity-pool-contract
+          cargo build --target wasm32-unknown-unknown --release \
+            -p vendor-registry-contract
+          cargo build --target wasm32-unknown-unknown --release \
+            -p reputation-contract
+          cargo build --target wasm32-unknown-unknown --release \
+            -p parameters-contract
+
+      - name: Build all contracts
+        run: |
+          cargo build --target wasm32-unknown-unknown --release
+
+      - name: Run tests
+        run: |
+          cargo test --manifest-path \
+            contracts/creditline-contract/Cargo.toml \
+            2>&1

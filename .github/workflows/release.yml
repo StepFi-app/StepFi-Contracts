@@ -1,0 +1,61 @@
+name: Build and Release Contracts
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release-parameters:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@main
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'StepFi Protocol — Parameters Contract'
+      relative_path: '["contracts/parameters-contract"]'
+      package: 'parameters-contract'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-reputation:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@main
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'StepFi Protocol — Reputation Contract'
+      relative_path: '["contracts/reputation-contract"]'
+      package: 'reputation-contract'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-vendor-registry:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@main
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'StepFi Protocol — Vendor Registry Contract'
+      relative_path: '["contracts/vendor-registry-contract"]'
+      package: 'vendor-registry-contract'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-liquidity-pool:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@main
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'StepFi Protocol — Liquidity Pool Contract'
+      relative_path: '["contracts/liquidity-pool-contract"]'
+      package: 'liquidity-pool-contract'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-creditline:
+    needs:
+      - release-liquidity-pool
+      - release-vendor-registry
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@main
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'StepFi Protocol — Creditline Contract'
+      relative_path: '["contracts/creditline-contract"]'
+      package: 'creditline-contract'
+      make_target: 'build-deps'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}

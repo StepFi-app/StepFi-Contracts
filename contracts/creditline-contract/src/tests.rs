@@ -2772,3 +2772,51 @@ fn test_reputation_call_failure_does_not_block_repayment() {
     // Score unchanged because the call was silently ignored
     assert_eq!(t.reputation.get_score(&user), 60);
 }
+
+#[test]
+fn test_approve_loan_success() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let pending = t.client.get_loan(&loan_id);
+    assert_eq!(pending.status, LoanStatus::Pending);
+
+    let approved = t.client.approve_loan(&loan_id);
+    assert_eq!(approved.status, LoanStatus::Active);
+
+    let stored = t.client.get_loan(&loan_id);
+    assert_eq!(stored.status, LoanStatus::Active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #25)")] // InvalidLoanStatus
+fn test_approve_loan_wrong_status() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    t.client.approve_loan(&loan_id);
+
+    // Loan is now Active — approving again must fail with InvalidLoanStatus.
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+fn test_approve_loan_not_admin() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // Clear all mocked auths so admin.require_auth() must come from a real
+    // authorization entry. Calling approve_loan without an admin auth entry
+    // should fail with an auth error.
+    t.env.set_auths(&[]);
+
+    let result = t.client.try_approve_loan(&loan_id);
+    assert!(result.is_err(), "expected auth error when caller is not admin");
+}

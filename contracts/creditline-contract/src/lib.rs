@@ -537,6 +537,32 @@ impl CreditLineContract {
         Ok(())
     }
 
+    pub fn approve_loan(env: Env, loan_id: u64) -> Loan {
+        // 1. Admin auth - must be first
+        let admin = storage::get_admin(&env);
+        admin.require_auth();
+
+        // 2. Load loan — panic if not found
+        let mut loan = storage::read_loan(&env, loan_id)
+            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::LoanNotFound));
+
+        // 3. Validate status is Pending
+        if loan.status != LoanStatus::Pending {
+            panic_with_error!(&env, CreditLineError::InvalidLoanStatus);
+        }
+
+        // 4. Transition to Active
+        loan.status = LoanStatus::Active;
+
+        // 5. Write back with TTL extension
+        storage::write_loan(&env, &loan);
+
+        // 6. Emit event
+        events::emit_loan_approved(&env, loan_id);
+
+        loan
+    }
+
     pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {
         caller.require_auth();
 

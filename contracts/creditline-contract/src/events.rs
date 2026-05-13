@@ -12,6 +12,13 @@ const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
 
+pub const LOANAPPROVED: &str = "LOANAPPROVED";
+
+pub fn emit_loan_approved(env: &Env, loan_id: u64) {
+    let topics = (Symbol::new(env, LOANAPPROVED), loan_id);
+    env.events().publish(topics, ());
+}
+
 /// Emit a loan created event
 pub fn emit_loan_created(
     env: &Env,

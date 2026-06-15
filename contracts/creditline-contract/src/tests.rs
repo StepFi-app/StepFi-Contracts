@@ -2820,3 +2820,118 @@ fn test_approve_loan_not_admin() {
     let result = t.client.try_approve_loan(&loan_id);
     assert!(result.is_err(), "expected auth error when caller is not admin");
 }
+
+// ─── repay_installment tests ──────────────────────────────────────────────────
+
+/// Helper: creates a loan with `n_installments` equal-valued installments
+/// using DEFAULT_PRINCIPAL and a generated vendor. Returns (loan_id, vendor).
+fn setup_loan_with_schedule(
+    t: &TestCtx,
+    borrower: &Address,
+    n_installments: u32,
+) -> (u64, Address) {
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(borrower, DEFAULT_GUARANTEE);
+
+    let due_date = t.env.ledger().timestamp() + 10_000;
+    let installment_amount = DEFAULT_TOTAL_DUE / n_installments as i128;
+    let mut schedule = soroban_sdk::Vec::new(&t.env);
+
+    for i in 0..n_installments {
+        schedule.push_back(RepaymentInstallment {
+            amount: installment_amount,
+            due_date: due_date + (i as u64 * 10_000),
+            paid: false,
+            paid_at: 0,
+        });
+    }
+
+    let loan_id = t.client.create_loan(
+        borrower,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+    (loan_id, vendor)
+}
+
+#[test]
+fn test_repay_installment_happy_path() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    t.mint(&user, payment);
+
+    t.env.ledger().set_timestamp(5000);
+    let remaining = t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    let installment = loan.repayment_schedule.get(0).unwrap();
+    assert!(installment.paid);
+    assert_eq!(installment.paid_at, 5000);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - payment);
+    assert_eq!(remaining, DEFAULT_TOTAL_DUE - payment);
+    assert_eq!(loan.status, LoanStatus::Active);
+    // Second installment remains unpaid
+    let inst2 = loan.repayment_schedule.get(1).unwrap();
+    assert!(!inst2.paid);
+    assert_eq!(inst2.paid_at, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #24)")]
+fn test_repay_installment_double_pay_rejected() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    t.mint(&user, payment * 2);
+
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_repay_installment_out_of_bounds() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    // Index 2 is out of bounds for a 2-installment schedule (valid: 0, 1)
+    t.client.repay_installment(&user, &loan_id, &2, &500);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_repay_installment_non_borrower_rejected() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let intruder = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    // A different address cannot repay the borrower's installment
+    t.client.repay_installment(&intruder, &loan_id, &0, &500);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_repay_installment_zero_amount_rejected() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    // Zero-amount payment must be rejected
+    t.client.repay_installment(&user, &loan_id, &0, &0);
+}

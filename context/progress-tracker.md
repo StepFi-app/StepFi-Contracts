@@ -50,6 +50,15 @@ Update this file after every completed contract change, fix, or architectural de
 - New event: `INSTPAID` via `emit_installment_paid`
 - All 93 existing tests updated and passing; 0 failing
 
+### repay_installment Unit Tests
+- Added `setup_loan_with_schedule` helper that creates a loan with N equal installments
+- `test_repay_installment_happy_path`: pays installment 0, verifies `paid`/`paid_at`, balance decremented, second installment untouched
+- `test_repay_installment_double_pay_rejected`: asserts `InstallmentAlreadyPaid` (#24) on second payment of same slot
+- `test_repay_installment_out_of_bounds`: asserts `InvalidInstallmentIndex` (#23) for index >= schedule length
+- `test_repay_installment_non_borrower_rejected`: asserts `UnauthorizedRepayer` (#14) when caller is not the borrower
+- `test_repay_installment_zero_amount_rejected`: asserts `InvalidRepaymentAmount` (#13) for zero payment
+- Total tests: 98 (93 existing + 5 new) — all passing
+
 ---
 
 ## In Progress
@@ -74,7 +83,6 @@ Update this file after every completed contract change, fix, or architectural de
 - Should the vouching contract be a standalone crate or logic added to `creditline-contract`? (Leaning toward standalone for modularity)
 - What is the correct `grace_period_seconds` for learner installment loans? (Longer than standard BNPL — possibly 7-14 days per installment)
 - Should sponsor pool deposits go through `liquidity-pool-contract` or a new `sponsor-pool-contract`?
-- `repay_installment()` needs dedicated tests: happy path, double-pay rejection, out-of-bounds index, non-borrower rejection.
 
 ---
 

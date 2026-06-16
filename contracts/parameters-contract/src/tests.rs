@@ -1,4 +1,7 @@
-use crate::{default_parameters, ParametersContract, ParametersContractClient, ProtocolParameters};
+use crate::{
+    default_parameters, ParametersContract, ParametersContractClient, ParametersError,
+    ProtocolParameters,
+};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 fn setup() -> (Env, ParametersContractClient<'static>, Address) {
@@ -20,6 +23,26 @@ fn test_initialize_defaults() {
 
     assert_eq!(client.get_admin(), admin);
     assert_eq!(client.get_parameters(), default_parameters());
+}
+
+#[test]
+fn test_get_admin_before_initialize_returns_typed_error() {
+    let (_env, client, _admin) = setup();
+
+    assert_eq!(
+        client.try_get_admin(),
+        Err(Ok(ParametersError::NotInitialized))
+    );
+}
+
+#[test]
+fn test_get_parameters_before_initialize_returns_typed_error() {
+    let (_env, client, _admin) = setup();
+
+    assert_eq!(
+        client.try_get_parameters(),
+        Err(Ok(ParametersError::NotInitialized))
+    );
 }
 
 #[test]

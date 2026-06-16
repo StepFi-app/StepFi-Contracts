@@ -65,20 +65,19 @@ impl LiquidityPoolContract {
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
-        let old_admin = storage::get_admin(&env);
+        let old_admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         old_admin.require_auth();
         Self::require_admin(&env, &old_admin);
         storage::set_admin(&env, &new_admin);
     }
 
-
     /// Upgrade the contract WASM — admin only
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, LiquidityPoolError> {
         storage::get_admin(&env)
     }
 
@@ -95,15 +94,17 @@ impl LiquidityPoolContract {
     pub fn deposit(env: Env, provider: Address, amount: i128) -> i128 {
         provider.require_auth();
 
-        if amount <= 0 {
+        if amount < types::MIN_AMOUNT {
             panic_with_error!(&env, LiquidityPoolError::InvalidAmount);
         }
 
         Self::enter_non_reentrant(&env);
 
-        let token = storage::get_token(&env);
-        let total_shares = storage::get_total_shares(&env);
-        let total_liquidity = storage::get_total_liquidity(&env);
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         // Calculate shares to issue
         let shares_issued = if total_shares == 0 || total_liquidity == 0 {
@@ -123,6 +124,7 @@ impl LiquidityPoolContract {
 
         // Update state
         let new_shares = storage::get_lp_shares(&env, &provider)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
             .checked_add(shares_issued)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Overflow));
         storage::set_lp_shares(&env, &provider, new_shares);
@@ -155,24 +157,28 @@ impl LiquidityPoolContract {
     pub fn withdraw(env: Env, provider: Address, shares: i128) -> i128 {
         provider.require_auth();
 
-        if shares <= 0 {
+        if shares < types::MIN_AMOUNT {
             panic_with_error!(&env, LiquidityPoolError::InvalidAmount);
         }
 
         Self::enter_non_reentrant(&env);
 
-        let provider_shares = storage::get_lp_shares(&env, &provider);
+        let provider_shares = storage::get_lp_shares(&env, &provider)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
         if provider_shares < shares {
             panic_with_error!(&env, LiquidityPoolError::InsufficientShares);
         }
 
-        let total_shares = storage::get_total_shares(&env);
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         if total_shares == 0 {
             panic_with_error!(&env, LiquidityPoolError::ZeroTotalShares);
         }
 
-        let total_liquidity = storage::get_total_liquidity(&env);
-        let locked_liquidity = storage::get_locked_liquidity(&env);
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let locked_liquidity =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let available_liquidity = total_liquidity
             .checked_sub(locked_liquidity)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Underflow));
@@ -205,7 +211,7 @@ impl LiquidityPoolContract {
 
         events::emit_liquidity_withdrawn(&env, &provider, shares, amount_returned);
         // Transfer tokens back to provider after state effects.
-        let token = storage::get_token(&env);
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &provider, &amount_returned);
         Self::exit_non_reentrant(&env);
@@ -229,8 +235,10 @@ impl LiquidityPoolContract {
 
         Self::enter_non_reentrant(&env);
 
-        let total_liquidity = storage::get_total_liquidity(&env);
-        let locked_liquidity = storage::get_locked_liquidity(&env);
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let locked_liquidity =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let available = total_liquidity
             .checked_sub(locked_liquidity)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Underflow));
@@ -245,7 +253,7 @@ impl LiquidityPoolContract {
         storage::set_locked_liquidity(&env, new_locked);
 
         // Transfer tokens from pool to merchant after accounting has been updated.
-        let token = storage::get_token(&env);
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &merchant, &amount);
 
@@ -275,14 +283,15 @@ impl LiquidityPoolContract {
         Self::enter_non_reentrant(&env);
 
         // Decrease locked liquidity by the principal
-        let locked = storage::get_locked_liquidity(&env);
+        let locked =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_locked = locked
             .checked_sub(principal)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Underflow));
         storage::set_locked_liquidity(&env, new_locked);
 
         // Pull funds from CreditLine after accounting changes.
-        let token = storage::get_token(&env);
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&creditline, &env.current_contract_address(), &total);
 
@@ -309,20 +318,22 @@ impl LiquidityPoolContract {
         // The defaulted loan principal stays "locked" — the guarantee partially
         // covers the loss.  We reduce locked_liquidity by the guarantee amount
         // and add it back to total_liquidity (net pool recovers that portion).
-        let locked = storage::get_locked_liquidity(&env);
+        let locked =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let recovered = amount.min(locked); // can't recover more than locked
         let new_locked = locked
             .checked_sub(recovered)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Underflow));
         storage::set_locked_liquidity(&env, new_locked);
 
-        let total_liquidity = storage::get_total_liquidity(&env);
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_total = total_liquidity
             .checked_add(recovered)
             .unwrap_or_else(|| panic_with_error!(&env, LiquidityPoolError::Overflow));
         storage::set_total_liquidity(&env, new_total);
 
-        let token = storage::get_token(&env);
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&creditline, &env.current_contract_address(), &amount);
 
@@ -354,6 +365,10 @@ impl LiquidityPoolContract {
         if interest_amount <= 0 {
             panic_with_error!(env, LiquidityPoolError::InvalidAmount);
         }
+        debug_assert_eq!(
+            types::LP_FEE_BPS + types::PROTOCOL_FEE_BPS + types::MERCHANT_FEE_BPS,
+            types::TOTAL_BPS
+        );
 
         // 85% stays in the pool → increases share value
         let lp_amount = interest_amount
@@ -373,12 +388,14 @@ impl LiquidityPoolContract {
             .and_then(|v| v.checked_sub(protocol_amount))
             .unwrap_or_else(|| panic_with_error!(env, LiquidityPoolError::Underflow));
 
-        let token = storage::get_token(env);
+        let token = storage::get_token(env).unwrap_or_else(|err| panic_with_error!(env, err));
         let token_client = token::Client::new(env, &token);
 
         // Transfer protocol fee to treasury (if configured)
         if protocol_amount > 0 {
-            if let Some(treasury) = storage::get_treasury(env) {
+            if let Some(treasury) =
+                storage::get_treasury(env).unwrap_or_else(|err| panic_with_error!(env, err))
+            {
                 token_client.transfer(&env.current_contract_address(), &treasury, &protocol_amount);
             }
             // If treasury not configured, protocol fee stays in pool (benefits LPs)
@@ -386,7 +403,9 @@ impl LiquidityPoolContract {
 
         // Transfer merchant incentive to merchant fund (if configured)
         if merchant_amount > 0 {
-            if let Some(merchant_fund) = storage::get_merchant_fund(env) {
+            if let Some(merchant_fund) =
+                storage::get_merchant_fund(env).unwrap_or_else(|err| panic_with_error!(env, err))
+            {
                 token_client.transfer(
                     &env.current_contract_address(),
                     &merchant_fund,
@@ -398,7 +417,8 @@ impl LiquidityPoolContract {
 
         // LP portion (lp_amount) stays in the pool — no transfer needed.
         // Update total_liquidity to reflect the added interest (raises share price).
-        let total_liquidity = storage::get_total_liquidity(env);
+        let total_liquidity =
+            storage::get_total_liquidity(env).unwrap_or_else(|err| panic_with_error!(env, err));
         let new_total = total_liquidity
             .checked_add(lp_amount)
             .unwrap_or_else(|| panic_with_error!(env, LiquidityPoolError::Overflow));
@@ -418,10 +438,13 @@ impl LiquidityPoolContract {
     // -------------------------------------------------------------------------
 
     pub fn get_pool_stats(env: Env) -> PoolStats {
-        let total_liquidity = storage::get_total_liquidity(&env);
-        let locked_liquidity = storage::get_locked_liquidity(&env);
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let locked_liquidity =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let available_liquidity = total_liquidity.saturating_sub(locked_liquidity);
-        let total_shares = storage::get_total_shares(&env);
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         // Share price in basis points: (total_liquidity × 10000) / total_shares
         let share_price = if total_shares == 0 {
@@ -443,16 +466,18 @@ impl LiquidityPoolContract {
     }
 
     pub fn get_lp_shares(env: Env, provider: Address) -> i128 {
-        storage::get_lp_shares(&env, &provider)
+        storage::get_lp_shares(&env, &provider).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
     /// Calculate how many tokens `shares` are worth at the current share price.
     pub fn calculate_withdrawal(env: Env, shares: i128) -> i128 {
-        let total_shares = storage::get_total_shares(&env);
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         if total_shares == 0 {
             return 0;
         }
-        let total_liquidity = storage::get_total_liquidity(&env);
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         shares
             .checked_mul(total_liquidity)
             .and_then(|v| v.checked_div(total_shares))
@@ -464,7 +489,7 @@ impl LiquidityPoolContract {
     // -------------------------------------------------------------------------
 
     fn require_admin(env: &Env, caller: &Address) {
-        let admin = storage::get_admin(env);
+        let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));
         if admin != *caller {
             panic_with_error!(env, LiquidityPoolError::NotAdmin);
         }
@@ -472,6 +497,7 @@ impl LiquidityPoolContract {
 
     fn require_creditline(env: &Env, caller: &Address) {
         let creditline = storage::get_creditline(env)
+            .unwrap_or_else(|err| panic_with_error!(env, err))
             .unwrap_or_else(|| panic_with_error!(env, LiquidityPoolError::NotCreditLine));
         if creditline != *caller {
             panic_with_error!(env, LiquidityPoolError::NotCreditLine);
@@ -479,7 +505,7 @@ impl LiquidityPoolContract {
     }
 
     fn enter_non_reentrant(env: &Env) {
-        if storage::is_reentrancy_locked(env) {
+        if storage::is_reentrancy_locked(env).unwrap_or_else(|err| panic_with_error!(env, err)) {
             panic_with_error!(env, LiquidityPoolError::ReentrancyDetected);
         }
         storage::set_reentrancy_locked(env, true);

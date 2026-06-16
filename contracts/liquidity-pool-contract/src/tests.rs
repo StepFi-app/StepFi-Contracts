@@ -1,4 +1,4 @@
-use crate::{LiquidityPoolContract, LiquidityPoolContractClient};
+use crate::{LiquidityPoolContract, LiquidityPoolContractClient, LiquidityPoolError};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
@@ -77,6 +77,18 @@ impl TestEnv {
 fn test_initialize() {
     let t = TestEnv::setup();
     assert_eq!(t.client.get_admin(), t.admin);
+}
+
+#[test]
+fn test_get_admin_before_initialize_returns_typed_error() {
+    let env = Env::default();
+    let contract_id = env.register(LiquidityPoolContract, ());
+    let client = LiquidityPoolContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_get_admin(),
+        Err(Ok(LiquidityPoolError::NotInitialized))
+    );
 }
 
 #[test]

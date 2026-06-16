@@ -26,6 +26,7 @@ impl ReputationContract {
     /// Get the reputation score for a user
     pub fn get_score(env: Env, user: Address) -> u32 {
         storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
     }
 
     /// Increase a user's reputation score by a given amount
@@ -34,7 +35,8 @@ impl ReputationContract {
         updater.require_auth();
         access::require_updater(&env, &updater);
 
-        let old_score = storage::read_score(&env, &user);
+        let old_score = storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         let new_score = old_score
             .checked_add(amount)
             .ok_or(ReputationError::Overflow)
@@ -56,7 +58,8 @@ impl ReputationContract {
         updater.require_auth();
         access::require_updater(&env, &updater);
 
-        let old_score = storage::read_score(&env, &user);
+        let old_score = storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         let new_score = match old_score.checked_sub(amount) {
             Some(score) => score,
             None => soroban_sdk::panic_with_error!(&env, ReputationError::Underflow),
@@ -78,7 +81,8 @@ impl ReputationContract {
             soroban_sdk::panic_with_error!(&env, ReputationError::OutOfBounds);
         }
 
-        let old_score = storage::read_score(&env, &user);
+        let old_score = storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         storage::write_score(&env, &user, new_score);
 
         let reason = symbol_short!("set");
@@ -98,6 +102,7 @@ impl ReputationContract {
     /// Check if an address is an authorized updater
     pub fn is_updater(env: Env, addr: Address) -> bool {
         storage::is_updater(&env, &addr)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
     }
 
     /// Set the admin address for this contract
@@ -119,15 +124,14 @@ impl ReputationContract {
         }
     }
 
-    /// Get the current admin address
-
     /// Upgrade the contract WASM — admin only
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, ReputationError> {
         storage::get_admin(&env)
     }
 }

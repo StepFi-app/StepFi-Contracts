@@ -1,5 +1,6 @@
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol, Vec};
 
+use crate::errors::CreditLineError;
 use crate::types::Loan;
 
 // Storage keys
@@ -24,11 +25,11 @@ enum DataKey {
 }
 
 /// Get the admin address from storage
-pub fn get_admin(env: &Env) -> Address {
+pub fn get_admin(env: &Env) -> Result<Address, CreditLineError> {
     env.storage()
         .instance()
         .get(&ADMIN_KEY)
-        .unwrap_or_else(|| panic!("Admin not set"))
+        .ok_or(CreditLineError::NotInitialized)
 }
 
 /// Set the admin address in storage
@@ -37,24 +38,25 @@ pub fn set_admin(env: &Env, admin: &Address) {
 }
 
 /// Get the current loan counter (for generating unique loan IDs)
-pub fn get_loan_counter(env: &Env) -> u64 {
-    env.storage().instance().get(&LOAN_COUNTER).unwrap_or(0)
+pub fn get_loan_counter(env: &Env) -> Result<u64, CreditLineError> {
+    Ok(env.storage().instance().get(&LOAN_COUNTER).unwrap_or(0))
 }
 
 /// Increment and return the next loan ID
-pub fn increment_loan_counter(env: &Env) -> u64 {
-    let current = get_loan_counter(env);
-    let next = current.checked_add(1).expect("Loan counter overflow");
+pub fn increment_loan_counter(env: &Env) -> Result<u64, CreditLineError> {
+    let current = get_loan_counter(env)?;
+    let next = current.checked_add(1).ok_or(CreditLineError::Overflow)?;
     env.storage().instance().set(&LOAN_COUNTER, &next);
-    next
+    Ok(next)
 }
 
 /// Read a loan from storage
-pub fn read_loan(env: &Env, loan_id: u64) -> Option<Loan> {
+pub fn read_loan(env: &Env, loan_id: u64) -> Result<Loan, CreditLineError> {
     let shard = loan_shard(loan_id);
     env.storage()
         .persistent()
         .get(&DataKey::Loan(shard, loan_id))
+        .ok_or(CreditLineError::LoanNotFound)
 }
 
 /// Write a loan to storage
@@ -70,11 +72,12 @@ pub fn write_loan(env: &Env, loan: &Loan) {
     }
 }
 
-pub fn get_user_loan_count(env: &Env, borrower: &Address) -> u64 {
-    env.storage()
+pub fn get_user_loan_count(env: &Env, borrower: &Address) -> Result<u64, CreditLineError> {
+    Ok(env
+        .storage()
         .persistent()
         .get(&DataKey::UserLoanCount(borrower.clone()))
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 pub fn get_user_loan_ids_paginated(
@@ -82,12 +85,12 @@ pub fn get_user_loan_ids_paginated(
     borrower: &Address,
     start: u64,
     limit: u32,
-) -> Vec<u64> {
-    let total = get_user_loan_count(env, borrower);
+) -> Result<Vec<u64>, CreditLineError> {
+    let total = get_user_loan_count(env, borrower)?;
     let mut result = Vec::new(env);
 
     if limit == 0 || start >= total {
-        return result;
+        return Ok(result);
     }
 
     let end = start.saturating_add(limit as u64).min(total);
@@ -100,7 +103,7 @@ pub fn get_user_loan_ids_paginated(
         idx += 1;
     }
 
-    result
+    Ok(result)
 }
 
 pub fn get_user_loans_paginated(
@@ -108,54 +111,68 @@ pub fn get_user_loans_paginated(
     borrower: &Address,
     start: u64,
     limit: u32,
-) -> Vec<Loan> {
-    let loan_ids = get_user_loan_ids_paginated(env, borrower, start, limit);
+) -> Result<Vec<Loan>, CreditLineError> {
+    let loan_ids = get_user_loan_ids_paginated(env, borrower, start, limit)?;
     let mut loans = Vec::new(env);
 
     for loan_id in loan_ids.iter() {
-        if let Some(loan) = read_loan(env, loan_id) {
-            loans.push_back(loan);
-        }
+        loans.push_back(read_loan(env, loan_id)?);
     }
 
-    loans
+    Ok(loans)
 }
 
-pub fn get_user_active_debt(env: &Env, borrower: &Address) -> i128 {
-    env.storage()
+pub fn get_user_active_debt(env: &Env, borrower: &Address) -> Result<i128, CreditLineError> {
+    Ok(env
+        .storage()
         .persistent()
         .get(&DataKey::UserActiveDebt(borrower.clone()))
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
-pub fn increase_user_active_debt(env: &Env, borrower: &Address, amount: i128) {
-    let current = get_user_active_debt(env, borrower);
+pub fn increase_user_active_debt(
+    env: &Env,
+    borrower: &Address,
+    amount: i128,
+) -> Result<(), CreditLineError> {
+    let current = get_user_active_debt(env, borrower)?;
     let next = current
         .checked_add(amount)
-        .expect("User active debt overflow");
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserActiveDebt(borrower.clone()), &next);
+        .ok_or(CreditLineError::Overflow)?;
+    let key = DataKey::UserActiveDebt(borrower.clone());
+    env.storage().persistent().set(&key, &next);
+    extend_persistent_ttl(env, &key);
+    Ok(())
 }
 
-pub fn decrease_user_active_debt(env: &Env, borrower: &Address, amount: i128) {
-    let current = get_user_active_debt(env, borrower);
+pub fn decrease_user_active_debt(
+    env: &Env,
+    borrower: &Address,
+    amount: i128,
+) -> Result<(), CreditLineError> {
+    let current = get_user_active_debt(env, borrower)?;
     let next = current
         .checked_sub(amount)
-        .expect("User active debt underflow");
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserActiveDebt(borrower.clone()), &next);
+        .ok_or(CreditLineError::Underflow)?;
+    let key = DataKey::UserActiveDebt(borrower.clone());
+    env.storage().persistent().set(&key, &next);
+    extend_persistent_ttl(env, &key);
+    Ok(())
 }
 
 fn append_user_loan_index(env: &Env, borrower: &Address, loan_id: u64) {
-    let count = get_user_loan_count(env, borrower);
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserLoanAt(borrower.clone(), count), &loan_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserLoanCount(borrower.clone()), &(count + 1));
+    let count = get_user_loan_count(env, borrower)
+        .unwrap_or_else(|err| soroban_sdk::panic_with_error!(env, err));
+    let loan_at_key = DataKey::UserLoanAt(borrower.clone(), count);
+    env.storage().persistent().set(&loan_at_key, &loan_id);
+    extend_persistent_ttl(env, &loan_at_key);
+
+    let count_key = DataKey::UserLoanCount(borrower.clone());
+    let next_count = count
+        .checked_add(1)
+        .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, CreditLineError::Overflow));
+    env.storage().persistent().set(&count_key, &next_count);
+    extend_persistent_ttl(env, &count_key);
 }
 
 fn loan_shard(loan_id: u64) -> u32 {
@@ -163,8 +180,8 @@ fn loan_shard(loan_id: u64) -> u32 {
 }
 
 /// Get the Reputation Contract address
-pub fn get_reputation_contract(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&REPUTATION_CONTRACT)
+pub fn get_reputation_contract(env: &Env) -> Result<Option<Address>, CreditLineError> {
+    Ok(env.storage().instance().get(&REPUTATION_CONTRACT))
 }
 
 /// Set the Reputation Contract address
@@ -173,8 +190,8 @@ pub fn set_reputation_contract(env: &Env, address: &Address) {
 }
 
 /// Get the Vendor Registry Contract address
-pub fn get_vendor_registry(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&MERCHANT_REGISTRY)
+pub fn get_vendor_registry(env: &Env) -> Result<Option<Address>, CreditLineError> {
+    Ok(env.storage().instance().get(&MERCHANT_REGISTRY))
 }
 
 /// Set the Vendor Registry Contract address
@@ -183,8 +200,8 @@ pub fn set_vendor_registry(env: &Env, address: &Address) {
 }
 
 /// Get the Liquidity Pool Contract address
-pub fn get_liquidity_pool(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&LIQUIDITY_POOL)
+pub fn get_liquidity_pool(env: &Env) -> Result<Option<Address>, CreditLineError> {
+    Ok(env.storage().instance().get(&LIQUIDITY_POOL))
 }
 
 /// Set the Liquidity Pool Contract address
@@ -193,8 +210,8 @@ pub fn set_liquidity_pool(env: &Env, address: &Address) {
 }
 
 /// Get the Token Contract address
-pub fn get_token(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&TOKEN)
+pub fn get_token(env: &Env) -> Result<Option<Address>, CreditLineError> {
+    Ok(env.storage().instance().get(&TOKEN))
 }
 
 /// Set the Token Contract address
@@ -203,8 +220,8 @@ pub fn set_token(env: &Env, address: &Address) {
 }
 
 /// Get the Parameters Contract address
-pub fn get_parameters_contract(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&PARAMETERS_CONTRACT)
+pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, CreditLineError> {
+    Ok(env.storage().instance().get(&PARAMETERS_CONTRACT))
 }
 
 /// Set the Parameters Contract address
@@ -212,11 +229,12 @@ pub fn set_parameters_contract(env: &Env, address: &Address) {
     env.storage().instance().set(&PARAMETERS_CONTRACT, address);
 }
 
-pub fn is_reentrancy_locked(env: &Env) -> bool {
-    env.storage()
+pub fn is_reentrancy_locked(env: &Env) -> Result<bool, CreditLineError> {
+    Ok(env
+        .storage()
         .instance()
         .get(&REENTRANCY_LOCK)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 pub fn set_reentrancy_locked(env: &Env, locked: bool) {
@@ -229,8 +247,13 @@ pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
 
 /// Extend TTL for a persistent storage entry
-pub fn extend_persistent_ttl_loan(env: &Env, key: &DataKey) {
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+/// Extend TTL for a loan storage entry
+fn extend_persistent_ttl_loan(env: &Env, key: &DataKey) {
+    extend_persistent_ttl(env, key);
 }

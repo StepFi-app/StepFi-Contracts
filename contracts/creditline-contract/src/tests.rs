@@ -1,6 +1,8 @@
-use crate::{CreditLineContract, CreditLineContractClient, LoanStatus, LoanType, RepaymentInstallment};
+use crate::{
+    CreditLineContract, CreditLineContractClient, CreditLineError, LoanStatus, LoanType,
+    RepaymentInstallment,
+};
 use liquidity_pool_contract::{LiquidityPoolContract, LiquidityPoolContractClient, PoolStats};
-use vendor_registry_contract::VendorRegistryContract;
 use parameters_contract::{
     default_parameters, ParametersContract, ParametersContractClient, ProtocolParameters,
 };
@@ -12,6 +14,7 @@ use soroban_sdk::{
     token::Client as TokenClient,
     Address, Env, String as SorobanString,
 };
+use vendor_registry_contract::VendorRegistryContract;
 
 const DEFAULT_PRINCIPAL: i128 = 1_000;
 const DEFAULT_GUARANTEE: i128 = 200;
@@ -79,14 +82,14 @@ use mock_low_rep::MockReputationLow;
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Creates a basic TestEnv with MockReputation wired in and the contract
-/// initialized. Returns (env, client, admin, rep_id).
+/// initialized.
 struct TestCtx {
     env: Env,
     client: CreditLineContractClient<'static>,
     admin: Address,
-    rep_id: Address,
+    _rep_id: Address,
     token_id: Address,
-    lp_id: Address,
+    _lp_id: Address,
     vendor_registry_id: Address,
 }
 
@@ -127,9 +130,9 @@ impl TestCtx {
             env,
             client,
             admin,
-            rep_id,
+            _rep_id: rep_id,
             token_id,
-            lp_id,
+            _lp_id: lp_id,
             vendor_registry_id,
         }
     }
@@ -457,7 +460,14 @@ fn test_create_loan_with_zero_total_amount() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // This should panic with InvalidAmount (error code 9)
-    client.create_loan(&user, &vendor, &0, &0, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &0,
+        &0,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -488,7 +498,14 @@ fn test_create_loan_with_negative_total_amount() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // This should panic with InvalidAmount (error code 9)
-    client.create_loan(&user, &vendor, &-1000, &-200, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &-1000,
+        &-200,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -519,7 +536,14 @@ fn test_create_loan_with_zero_guarantee_amount() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // This should panic with InvalidAmount (error code 9)
-    client.create_loan(&user, &vendor, &1000, &0, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &0,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -550,7 +574,14 @@ fn test_create_loan_with_insufficient_guarantee_19_percent() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // 190 is 19% of 1000, should fail with InsufficientGuarantee (error code 2)
-    client.create_loan(&user, &vendor, &1000, &190, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &190,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -581,25 +612,33 @@ fn test_create_loan_with_insufficient_guarantee_10_percent() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // 100 is 10% of 1000, should fail with InsufficientGuarantee (error code 2)
-    client.create_loan(&user, &vendor, &1000, &100, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &100,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 // Additional edge case tests
 
 #[test]
-#[should_panic(expected = "Admin not set")]
 fn test_get_admin_before_initialization() {
     let env = Env::default();
 
     let contract_id = env.register(CreditLineContract, ());
     let client = CreditLineContractClient::new(&env, &contract_id);
 
-    // Try to get admin before initialization - should panic
-    client.get_admin();
+    assert_eq!(
+        client.try_get_admin(),
+        Err(Ok(CreditLineError::NotInitialized))
+    );
 }
 
 #[test]
-#[should_panic(expected = "Admin not set")]
+#[should_panic(expected = "Error(Contract, #26)")]
 fn test_set_admin_before_initialization() {
     let env = Env::default();
     env.mock_all_auths();
@@ -668,7 +707,14 @@ fn test_create_loan_with_one_less_than_minimum_guarantee() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // 199 is 1 less than 20% of 1000, should fail with InsufficientGuarantee (error code 2)
-    client.create_loan(&user, &vendor, &1000, &199, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &199,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -730,7 +776,14 @@ fn test_create_loan_with_positive_total_negative_guarantee() {
     let repayment_schedule = soroban_sdk::Vec::new(&env);
 
     // Positive total but negative guarantee should fail with InvalidAmount (error code 9)
-    client.create_loan(&user, &vendor, &1000, &-200, &repayment_schedule, &LoanType::Standard);
+    client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &-200,
+        &repayment_schedule,
+        &LoanType::Standard,
+    );
 }
 
 #[test]
@@ -1312,7 +1365,6 @@ fn test_mark_defaulted_triggers_reputation_slash() {
 
 /// Helper: register and wire up a ParametersContract with the given grace period.
 fn setup_parameters_with_grace_period(t: &TestCtx, grace_period_seconds: u64) {
-    use soroban_sdk::Symbol;
     let params_id = t.env.register(ParametersContract, ());
     let params_client = ParametersContractClient::new(&t.env, &params_id);
     params_client.initialize(
@@ -1340,9 +1392,9 @@ fn test_mark_defaulted_blocked_during_grace_period() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // One second past due but still within the grace window.
     t.env.ledger().set_timestamp(due_date + 1);
@@ -1370,9 +1422,9 @@ fn test_mark_defaulted_succeeds_after_grace_period_expires() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // One second past the end of the grace window.
     t.env.ledger().set_timestamp(due_date + grace + 1);
@@ -1397,9 +1449,9 @@ fn test_mark_defaulted_at_grace_period_boundary_still_blocked() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     t.env.ledger().set_timestamp(due_date + grace);
     let result = t.client.try_mark_defaulted(&loan_id);
@@ -1423,9 +1475,9 @@ fn test_warn_grace_period_emits_event() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // Advance into the grace window and call warn_grace_period.
     t.env.ledger().set_timestamp(due_date + 1);
@@ -1452,9 +1504,9 @@ fn test_warn_grace_period_fails_before_due_date() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // Still before due date — should return LoanNotOverdue.
     let result = t.client.try_warn_grace_period(&loan_id);
@@ -1478,9 +1530,9 @@ fn test_warn_grace_period_fails_after_grace_expires() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // Past the grace window — no longer in grace period.
     t.env.ledger().set_timestamp(due_date + grace + 1);
@@ -1505,9 +1557,9 @@ fn test_zero_grace_period_allows_immediate_default() {
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, due_date);
     t.mint(&user, 200);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     t.env.ledger().set_timestamp(due_date + 1);
     t.client.mark_defaulted(&loan_id);
@@ -1734,9 +1786,14 @@ fn test_unregistered_vendor_loan_is_rejected() {
     let schedule = t.single_installment(1000, due_date);
 
     // This should panic with InvalidVendor error
-    let _ = t
-        .client
-        .create_loan(&user, &unknown_vendor, &1000, &200, &schedule, &LoanType::Standard);
+    let _ = t.client.create_loan(
+        &user,
+        &unknown_vendor,
+        &1000,
+        &200,
+        &schedule,
+        &LoanType::Standard,
+    );
 }
 
 // ─── liquidity pool integration — TDD stubs (Phase 6) ────────────────────────
@@ -1845,12 +1902,22 @@ fn test_multiple_independent_loans_do_not_interfere() {
     t.mint(&user_a, 200);
     t.mint(&user_b, 400);
 
-    let loan_a = t
-        .client
-        .create_loan(&user_a, &vendor, &1000, &200, &schedule_a, &LoanType::Standard);
-    let loan_b = t
-        .client
-        .create_loan(&user_b, &vendor, &2000, &400, &schedule_b, &LoanType::Standard);
+    let loan_a = t.client.create_loan(
+        &user_a,
+        &vendor,
+        &1000,
+        &200,
+        &schedule_a,
+        &LoanType::Standard,
+    );
+    let loan_b = t.client.create_loan(
+        &user_b,
+        &vendor,
+        &2000,
+        &400,
+        &schedule_b,
+        &LoanType::Standard,
+    );
 
     // Default loan_a only
     t.advance_past(5000);
@@ -2157,10 +2224,8 @@ impl RealIntegrationCtx {
         let reputation = ReputationContractClient::new(&env, &reputation_id);
 
         let vendor_registry_id = env.register(VendorRegistryContract, ());
-        let vendor_registry = vendor_registry_contract::VendorRegistryContractClient::new(
-            &env,
-            &vendor_registry_id,
-        );
+        let vendor_registry =
+            vendor_registry_contract::VendorRegistryContractClient::new(&env, &vendor_registry_id);
 
         let pool_id = env.register(LiquidityPoolContract, ());
         let pool = LiquidityPoolContractClient::new(&env, &pool_id);
@@ -2246,10 +2311,12 @@ impl RealIntegrationCtx {
         due_date: u64,
     ) -> soroban_sdk::Vec<RepaymentInstallment> {
         let mut schedule = soroban_sdk::Vec::new(&self.env);
-        schedule.push_back(RepaymentInstallment { due_date, amount,
- paid: false,
- paid_at: 0,
-});
+        schedule.push_back(RepaymentInstallment {
+            due_date,
+            amount,
+            paid: false,
+            paid_at: 0,
+        });
         schedule
     }
 }
@@ -2273,9 +2340,9 @@ fn test_real_asset_transfers_on_create_and_repay() {
 
     let due_date = t.env.ledger().timestamp() + 10_000;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     assert_eq!(t.balance(&user), user_balance_before - 200);
     assert_eq!(t.balance(&vendor), vendor_balance_before + 800);
@@ -2342,9 +2409,9 @@ fn test_end_to_end_happy_path_across_all_contracts() {
     let share_price_before = t.pool.get_pool_stats().share_price;
     let due_date = t.env.ledger().timestamp() + 10_000;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let loan_before_repay = t.creditline.get_loan(&loan_id);
     let total_due = loan_before_repay.remaining_balance;
@@ -2382,9 +2449,9 @@ fn test_end_to_end_default_path_guarantee_and_penalty() {
 
     t.env.ledger().set_timestamp(1_000);
     let schedule = t.single_installment(1_000, 5_000);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let creditline_balance_after_loan = t.balance(&t.creditline_id);
     let pool_balance_after_loan = t.balance(&t.pool.address);
@@ -2423,9 +2490,14 @@ fn test_no_late_fee_before_due_date() {
     let due_date = 50_000_u64;
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.late_fees_outstanding, 0);
@@ -2444,9 +2516,14 @@ fn test_apply_late_fees_adds_fee_after_one_day_overdue() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     // Advance 1 full day past due_date
     t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
@@ -2470,9 +2547,14 @@ fn test_apply_late_fees_accumulates_over_multiple_days() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     t.env.ledger().set_timestamp(due_date + 3 * SECONDS_PER_DAY);
     t.client.apply_late_fees(&loan_id);
@@ -2494,9 +2576,14 @@ fn test_apply_late_fees_is_noop_within_same_day() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
     t.client.apply_late_fees(&loan_id);
@@ -2523,9 +2610,14 @@ fn test_apply_late_fees_incremental_across_two_calls() {
     // due_date == 0, so it's already overdue at creation time; first day starts at ledger 0
     // Advance ledger to 1 so due_date < now and create the loan
     t.env.ledger().set_timestamp(1);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     // First accrual: 1 day after due_date (due_date = 0, now = SECONDS_PER_DAY)
     t.env.ledger().set_timestamp(SECONDS_PER_DAY);
@@ -2571,9 +2663,14 @@ fn test_repay_loan_auto_accrues_late_fees() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     // Advance 1 day past due_date and attempt partial payment
     t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
@@ -2601,9 +2698,14 @@ fn test_full_repayment_including_late_fees_sets_paid() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
     t.client.apply_late_fees(&loan_id);
@@ -2632,9 +2734,14 @@ fn test_active_debt_includes_late_fees() {
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
     t.env.ledger().set_timestamp(0);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     let debt_before = t.client.get_user_active_debt(&user);
 
@@ -2662,9 +2769,9 @@ fn test_on_time_full_repayment_increases_score_by_10() {
 
     let due_date = 5_000_u64;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let loan = t.creditline.get_loan(&loan_id);
     let total_due = loan.remaining_balance;
@@ -2693,9 +2800,9 @@ fn test_early_full_repayment_increases_score_by_15() {
     t.env.ledger().set_timestamp(1_000);
     let due_date = 10_000_u64;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let loan = t.creditline.get_loan(&loan_id);
     let total_due = loan.remaining_balance;
@@ -2723,9 +2830,9 @@ fn test_partial_repayment_does_not_change_reputation_score() {
 
     let due_date = t.env.ledger().timestamp() + 10_000;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let loan = t.creditline.get_loan(&loan_id);
     t.mint(&user, loan.remaining_balance);
@@ -2751,17 +2858,16 @@ fn test_reputation_call_failure_does_not_block_repayment() {
 
     let due_date = t.env.ledger().timestamp() + 10_000;
     let schedule = t.single_installment(1_000, due_date);
-    let loan_id = t
-        .creditline
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     let loan = t.creditline.get_loan(&loan_id);
     let total_due = loan.remaining_balance;
     t.mint(&user, total_due);
 
     // Revoke updater permission so the increase_score call will fail
-    t.reputation
-        .set_updater(&t.admin, &t.creditline_id, &false);
+    t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
 
     // Repayment must still succeed despite the reputation call failure
     t.creditline.repay_loan(&user, &loan_id, &total_due);
@@ -2818,7 +2924,10 @@ fn test_approve_loan_not_admin() {
     t.env.set_auths(&[]);
 
     let result = t.client.try_approve_loan(&loan_id);
-    assert!(result.is_err(), "expected auth error when caller is not admin");
+    assert!(
+        result.is_err(),
+        "expected auth error when caller is not admin"
+    );
 }
 
 // ─── repay_installment tests ──────────────────────────────────────────────────

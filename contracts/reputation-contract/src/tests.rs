@@ -4,8 +4,8 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
-use crate::ReputationContract;
 use crate::ReputationContractClient;
+use crate::{ReputationContract, ReputationError};
 
 /// Test: Sets the contract admin
 #[test]
@@ -21,6 +21,19 @@ fn it_sets_admin() {
 
     let retrieved_admin = client.get_admin();
     assert_eq!(retrieved_admin, admin);
+}
+
+#[test]
+fn it_returns_typed_error_when_getting_admin_before_initialization() {
+    let env = Env::default();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_get_admin(),
+        Err(Ok(ReputationError::NotInitialized))
+    );
 }
 
 /// Test: Gets the contract admin

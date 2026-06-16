@@ -33,19 +33,18 @@ impl ParametersContract {
         Self::initialize(env, admin, default_parameters());
     }
 
-
     /// Upgrade the contract WASM — admin only
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, ParametersError> {
         storage::get_admin(&env)
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
-        let old_admin = storage::get_admin(&env);
+        let old_admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         old_admin.require_auth();
         access::require_admin(&env, &old_admin);
 
@@ -53,7 +52,7 @@ impl ParametersContract {
         events::emit_admin_updated(&env, &old_admin, &new_admin);
     }
 
-    pub fn get_parameters(env: Env) -> ProtocolParameters {
+    pub fn get_parameters(env: Env) -> Result<ProtocolParameters, ParametersError> {
         storage::get_parameters(&env)
     }
 

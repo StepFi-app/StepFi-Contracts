@@ -10,4 +10,5 @@ pub enum Error {
     VendorNotFound = 4,
     InvalidName = 5,
     Unauthorized = 6,
+    Overflow = 7,
 }

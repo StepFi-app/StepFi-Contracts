@@ -37,6 +37,18 @@ fn test_initialization() {
 }
 
 #[test]
+fn test_get_vendor_count_before_initialize_returns_typed_error() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_get_vendor_count(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
 fn test_registration_flow() {
     let env = Env::default();
     let (client, admin, vendor) = setup(&env);

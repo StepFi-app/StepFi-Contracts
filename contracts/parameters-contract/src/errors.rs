@@ -7,4 +7,5 @@ pub enum ParametersError {
     AlreadyInitialized = 1,
     NotAdmin = 2,
     InvalidParameters = 3,
+    NotInitialized = 4,
 }

@@ -59,6 +59,14 @@ Update this file after every completed contract change, fix, or architectural de
 - `test_repay_installment_zero_amount_rejected`: asserts `InvalidRepaymentAmount` (#13) for zero payment
 - Total tests: 98 (93 existing + 5 new) — all passing
 
+### Issue #6 — Typed Storage Errors
+- Removed all `.expect(...)` and bare `.unwrap()` matches from `contracts/*/src/storage.rs`
+- Converted storage getters/readers to typed `Result<T, ContractError>` paths while preserving intentional zero/false/default semantics
+- Added TTL extension after persistent writes for creditline user indexes/active debt, liquidity-pool LP shares, and vendor-registry vendor/count records
+- Added missing `NotInitialized` variants to creditline, parameters, and reputation errors without renumbering existing variants
+- Added before-initialize regression coverage across all 5 active contracts using generated `try_*` clients
+- Verified with `cargo check --offline`, `cargo build --offline`, `cargo test --offline`, and `cargo clippy --offline -- -D warnings` — 230 passed, 0 failed, 4 ignored
+
 ---
 
 ## In Progress

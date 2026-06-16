@@ -10,4 +10,5 @@ pub enum ReputationError {
     OutOfBounds = 3,
     Overflow = 4,
     Underflow = 5,
+    NotInitialized = 6,
 }

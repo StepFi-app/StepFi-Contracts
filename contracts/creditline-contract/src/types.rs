@@ -61,16 +61,16 @@ pub struct Loan {
     pub repayment_schedule: soroban_sdk::Vec<RepaymentInstallment>,
     pub status: LoanStatus,
     pub loan_type: LoanType,
-    pub created_at: u64,                  // Unix timestamp
-    pub funded_at: u64,                   // 0 means not funded yet
-    pub late_fees_outstanding: i128,      // accumulated unpaid late fees
-    pub late_fee_accrual_timestamp: u64,  // last accrual timestamp (0 = never accrued)
+    pub created_at: u64,                 // Unix timestamp
+    pub funded_at: u64,                  // 0 means not funded yet
+    pub late_fees_outstanding: i128,     // accumulated unpaid late fees
+    pub late_fee_accrual_timestamp: u64, // last accrual timestamp (0 = never accrued)
 }
 
 pub fn default_protocol_parameters() -> ProtocolParameters {
     ProtocolParameters {
-        min_guarantee_percent: 20,
-        min_reputation_threshold: 50,
+        min_guarantee_percent: MIN_GUARANTEE_PERCENT,
+        min_reputation_threshold: MIN_REPUTATION_THRESHOLD,
         full_repayment_reward: 10,
         default_penalty: 20,
         large_loan_threshold: 5_000,

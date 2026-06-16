@@ -1,5 +1,7 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
+use crate::errors::LiquidityPoolError;
+
 // Instance storage keys
 pub const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 pub const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
@@ -13,14 +15,16 @@ pub const REENTRANCY_LOCK_KEY: Symbol = symbol_short!("LOCKED");
 
 // Persistent storage key prefix for LP shares
 pub const LP_SHARES_PREFIX: Symbol = symbol_short!("LPSHRS");
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
 
 // --- Admin ---
 
-pub fn get_admin(env: &Env) -> Address {
+pub fn get_admin(env: &Env) -> Result<Address, LiquidityPoolError> {
     env.storage()
         .instance()
         .get(&ADMIN_KEY)
-        .expect("Not initialized")
+        .ok_or(LiquidityPoolError::NotInitialized)
 }
 
 pub fn set_admin(env: &Env, admin: &Address) {
@@ -33,11 +37,11 @@ pub fn has_admin(env: &Env) -> bool {
 
 // --- Token ---
 
-pub fn get_token(env: &Env) -> Address {
+pub fn get_token(env: &Env) -> Result<Address, LiquidityPoolError> {
     env.storage()
         .instance()
         .get(&TOKEN_KEY)
-        .expect("Not initialized")
+        .ok_or(LiquidityPoolError::NotInitialized)
 }
 
 pub fn set_token(env: &Env, token: &Address) {
@@ -46,8 +50,8 @@ pub fn set_token(env: &Env, token: &Address) {
 
 // --- CreditLine ---
 
-pub fn get_creditline(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&CREDITLINE_KEY)
+pub fn get_creditline(env: &Env) -> Result<Option<Address>, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&CREDITLINE_KEY))
 }
 
 pub fn set_creditline(env: &Env, creditline: &Address) {
@@ -56,8 +60,8 @@ pub fn set_creditline(env: &Env, creditline: &Address) {
 
 // --- Protocol Treasury ---
 
-pub fn get_treasury(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&TREASURY_KEY)
+pub fn get_treasury(env: &Env) -> Result<Option<Address>, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&TREASURY_KEY))
 }
 
 pub fn set_treasury(env: &Env, treasury: &Address) {
@@ -66,8 +70,8 @@ pub fn set_treasury(env: &Env, treasury: &Address) {
 
 // --- Merchant Incentive Fund ---
 
-pub fn get_merchant_fund(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&MERCHANT_FUND_KEY)
+pub fn get_merchant_fund(env: &Env) -> Result<Option<Address>, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&MERCHANT_FUND_KEY))
 }
 
 pub fn set_merchant_fund(env: &Env, merchant_fund: &Address) {
@@ -78,8 +82,8 @@ pub fn set_merchant_fund(env: &Env, merchant_fund: &Address) {
 
 // --- Total Shares ---
 
-pub fn get_total_shares(env: &Env) -> i128 {
-    env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0)
+pub fn get_total_shares(env: &Env) -> Result<i128, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&TOTAL_SHARES_KEY).unwrap_or(0))
 }
 
 pub fn set_total_shares(env: &Env, total: i128) {
@@ -88,11 +92,12 @@ pub fn set_total_shares(env: &Env, total: i128) {
 
 // --- Total Liquidity ---
 
-pub fn get_total_liquidity(env: &Env) -> i128 {
-    env.storage()
+pub fn get_total_liquidity(env: &Env) -> Result<i128, LiquidityPoolError> {
+    Ok(env
+        .storage()
         .instance()
         .get(&TOTAL_LIQUIDITY_KEY)
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 pub fn set_total_liquidity(env: &Env, total: i128) {
@@ -101,11 +106,12 @@ pub fn set_total_liquidity(env: &Env, total: i128) {
 
 // --- Locked Liquidity ---
 
-pub fn get_locked_liquidity(env: &Env) -> i128 {
-    env.storage()
+pub fn get_locked_liquidity(env: &Env) -> Result<i128, LiquidityPoolError> {
+    Ok(env
+        .storage()
         .instance()
         .get(&LOCKED_LIQUIDITY_KEY)
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 pub fn set_locked_liquidity(env: &Env, locked: i128) {
@@ -114,24 +120,28 @@ pub fn set_locked_liquidity(env: &Env, locked: i128) {
 
 // --- LP Shares (persistent per-provider) ---
 
-pub fn get_lp_shares(env: &Env, provider: &Address) -> i128 {
-    env.storage()
+pub fn get_lp_shares(env: &Env, provider: &Address) -> Result<i128, LiquidityPoolError> {
+    Ok(env
+        .storage()
         .persistent()
         .get(&(LP_SHARES_PREFIX, provider.clone()))
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 pub fn set_lp_shares(env: &Env, provider: &Address, shares: i128) {
+    let key = (LP_SHARES_PREFIX, provider.clone());
+    env.storage().persistent().set(&key, &shares);
     env.storage()
         .persistent()
-        .set(&(LP_SHARES_PREFIX, provider.clone()), &shares);
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
-pub fn is_reentrancy_locked(env: &Env) -> bool {
-    env.storage()
+pub fn is_reentrancy_locked(env: &Env) -> Result<bool, LiquidityPoolError> {
+    Ok(env
+        .storage()
         .instance()
         .get(&REENTRANCY_LOCK_KEY)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 pub fn set_reentrancy_locked(env: &Env, locked: bool) {

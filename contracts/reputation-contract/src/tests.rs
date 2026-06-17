@@ -184,6 +184,50 @@ fn it_sets_score() {
     assert_eq!(client.get_score(&user), 25);
 }
 
+#[test]
+fn it_adds_boost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+
+    client.set_score(&updater, &user, &40);
+    client.add_boost(&updater, &user, &10);
+
+    assert_eq!(client.get_score(&user), 50);
+}
+
+#[test]
+fn it_removes_boost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+
+    client.set_score(&updater, &user, &40);
+    client.remove_boost(&updater, &user, &10);
+
+    assert_eq!(client.get_score(&user), 30);
+}
+
 /// Test: Prevents unauthorized updates
 #[test]
 #[should_panic(expected = "Error(Contract, #2)")]

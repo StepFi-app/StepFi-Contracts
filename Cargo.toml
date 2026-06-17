@@ -5,6 +5,7 @@ members = [
     "contracts/parameters-contract",
     "contracts/vendor-registry-contract",
     "contracts/liquidity-pool-contract",
+    "contracts/vouching-contract",
 ]
 resolver = "2"
 

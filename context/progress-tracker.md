@@ -67,6 +67,14 @@ Update this file after every completed contract change, fix, or architectural de
 - Added before-initialize regression coverage across all 5 active contracts using generated `try_*` clients
 - Verified with `cargo check --offline`, `cargo build --offline`, `cargo test --offline`, and `cargo clippy --offline -- -D warnings` — 230 passed, 0 failed, 4 ignored
 
+### Issue #4 — Mentor Vouching Contract
+- Added `vouching-contract` workspace member with `vouch`, `revoke_vouch`, `get_vouches`, `set_mentor`, and initialization APIs
+- Stored verified mentors and mentor/learner vouch records in persistent storage with TTL extension after every persistent write
+- Added learner-to-mentor indexing so `get_vouches(learner)` avoids global scans
+- Added `MENTORVOUCHED`, `VOUCHREVOKED`, and `MENTORVERIFIED` event helpers using short Soroban event symbols
+- Added reputation `add_boost` and `remove_boost` updater-gated APIs for vouching cross-contract calls
+- Added mock reputation cross-contract tests covering mentor verification, vouching, revocation, duplicate rejection, unverified mentor rejection, admin rejection, and event emission
+
 ---
 
 ## In Progress
@@ -78,17 +86,15 @@ Update this file after every completed contract change, fix, or architectural de
 ## Next Up (In Order)
 
 1. **Learner grace period** — Make `grace_period_seconds` per-loan (not just global via parameters)
-2. **Vouching contract** — New `vouching-contract` crate: `vouch()`, `revoke_vouch()`, `get_vouches()`, `get_vouch_count()`
-3. **Reputation rules** — Update `creditline-contract` to call different reputation adjustments for `LoanType::LearnerInstallment`
-4. **Testnet deployment** — Deploy all contracts, capture IDs, add to StepFi-API `.env`
-5. **End-to-end validation** — Verify loan lifecycle on testnet via Stellar CLI
+2. **Reputation rules** — Update `creditline-contract` to call different reputation adjustments for `LoanType::LearnerInstallment`
+3. **Testnet deployment** — Deploy all contracts, capture IDs, add to StepFi-API `.env`
+4. **End-to-end validation** — Verify loan lifecycle on testnet via Stellar CLI
 
 ---
 
 ## Open Questions
 
 - What token is used for loans — native XLM or a USDC anchor? (Affects token contract address in `initialize()`)
-- Should the vouching contract be a standalone crate or logic added to `creditline-contract`? (Leaning toward standalone for modularity)
 - What is the correct `grace_period_seconds` for learner installment loans? (Longer than standard BNPL — possibly 7-14 days per installment)
 - Should sponsor pool deposits go through `liquidity-pool-contract` or a new `sponsor-pool-contract`?
 

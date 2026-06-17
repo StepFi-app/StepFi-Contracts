@@ -89,6 +89,48 @@ impl ReputationContract {
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
     }
 
+    /// Add a mentor vouching boost to a user's reputation score.
+    /// Requires authorization from an updater.
+    pub fn add_boost(env: Env, updater: Address, user: Address, amount: u32) {
+        updater.require_auth();
+        access::require_updater(&env, &updater);
+
+        let old_score = storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let new_score = old_score
+            .checked_add(amount)
+            .ok_or(ReputationError::Overflow)
+            .unwrap();
+
+        if new_score > types::MAX_SCORE {
+            soroban_sdk::panic_with_error!(&env, ReputationError::Overflow);
+        }
+
+        storage::write_score(&env, &user, new_score);
+
+        let reason = symbol_short!("boost");
+        events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+    }
+
+    /// Remove a mentor vouching boost from a user's reputation score.
+    /// Requires authorization from an updater.
+    pub fn remove_boost(env: Env, updater: Address, user: Address, amount: u32) {
+        updater.require_auth();
+        access::require_updater(&env, &updater);
+
+        let old_score = storage::read_score(&env, &user)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let new_score = match old_score.checked_sub(amount) {
+            Some(score) => score,
+            None => soroban_sdk::panic_with_error!(&env, ReputationError::Underflow),
+        };
+
+        storage::write_score(&env, &user, new_score);
+
+        let reason = symbol_short!("unboost");
+        events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+    }
+
     /// Set or remove an address as an authorized updater
     /// Requires authorization from admin
     pub fn set_updater(env: Env, admin: Address, updater: Address, allowed: bool) {

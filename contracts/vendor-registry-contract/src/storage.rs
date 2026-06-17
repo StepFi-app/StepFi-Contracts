@@ -58,6 +58,18 @@ pub fn increment_vendor_count(env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn is_reentrancy_locked(env: &Env) -> Result<bool, Error> {
+    Ok(env
+        .storage()
+        .instance()
+        .get(&DataKey::Locked)
+        .unwrap_or(false))
+}
+
+pub fn set_reentrancy_locked(env: &Env, locked: bool) {
+    env.storage().instance().set(&DataKey::Locked, &locked);
+}
+
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()

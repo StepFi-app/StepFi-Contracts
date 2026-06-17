@@ -211,3 +211,137 @@ fn assert_event(env: &Env, expected: Symbol) {
 
     panic!("expected event was not emitted");
 }
+
+// ============================================================================
+// Reentrancy Guard Tests
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_reentrancy_guard_on_vouch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let reputation = env.register(MockReputationContract, ());
+    let contract_id = env.register(VouchingContract, ());
+    let client = VouchingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let mentor = Address::generate(&env);
+    let learner = Address::generate(&env);
+
+    client.initialize(&admin, &reputation, &DEFAULT_VOUCH_BOOST);
+    client.set_mentor(&admin, &mentor, &true);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::types::DataKey::Locked, &true);
+    });
+
+    client.vouch(&mentor, &learner);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_reentrancy_guard_on_revoke_vouch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let reputation = env.register(MockReputationContract, ());
+    let contract_id = env.register(VouchingContract, ());
+    let client = VouchingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let mentor = Address::generate(&env);
+    let learner = Address::generate(&env);
+
+    client.initialize(&admin, &reputation, &DEFAULT_VOUCH_BOOST);
+    client.set_mentor(&admin, &mentor, &true);
+    client.vouch(&mentor, &learner);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::types::DataKey::Locked, &true);
+    });
+
+    client.revoke_vouch(&mentor, &learner);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_reentrancy_guard_on_set_mentor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let reputation = env.register(MockReputationContract, ());
+    let contract_id = env.register(VouchingContract, ());
+    let client = VouchingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let mentor = Address::generate(&env);
+
+    client.initialize(&admin, &reputation, &DEFAULT_VOUCH_BOOST);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::types::DataKey::Locked, &true);
+    });
+
+    client.set_mentor(&admin, &mentor, &true);
+}
+
+#[test]
+fn test_reentrancy_guard_allows_normal_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let reputation = env.register(MockReputationContract, ());
+    let contract_id = env.register(VouchingContract, ());
+    let client = VouchingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let mentor = Address::generate(&env);
+    let learner = Address::generate(&env);
+
+    client.initialize(&admin, &reputation, &DEFAULT_VOUCH_BOOST);
+    client.set_mentor(&admin, &mentor, &true);
+    client.vouch(&mentor, &learner);
+
+    let record = client.get_vouches(&learner).get_unchecked(0);
+    assert!(record.active);
+
+    // Normal operations after unlocking should work
+    let mentor2 = Address::generate(&env);
+    client.set_mentor(&admin, &mentor2, &true);
+    assert!(client.is_mentor(&mentor2));
+
+    client.revoke_vouch(&mentor, &learner);
+    let record = client.get_vouches(&learner).get_unchecked(0);
+    assert!(!record.active);
+}
+
+#[test]
+fn test_reentrancy_guard_is_released_after_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let reputation = env.register(MockReputationContract, ());
+    let contract_id = env.register(VouchingContract, ());
+    let client = VouchingContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let mentor = Address::generate(&env);
+    let learner = Address::generate(&env);
+
+    client.initialize(&admin, &reputation, &DEFAULT_VOUCH_BOOST);
+    client.set_mentor(&admin, &mentor, &true);
+
+    // First call should succeed
+    client.vouch(&mentor, &learner);
+
+    // Lock should be released, second call should also succeed
+    let learner2 = Address::generate(&env);
+    // Can't vouch same pair, so create a new learner
+    let mentor2 = Address::generate(&env);
+    client.set_mentor(&admin, &mentor2, &true);
+    client.vouch(&mentor2, &learner2);
+    assert_eq!(client.get_vouches(&learner2).len(), 1);
+}

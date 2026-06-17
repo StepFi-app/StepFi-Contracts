@@ -13,4 +13,5 @@ pub enum VouchingError {
     VouchNotActive = 7,
     InvalidBoost = 8,
     ReputationCallFailed = 9,
+    ReentrancyDetected = 10,
 }

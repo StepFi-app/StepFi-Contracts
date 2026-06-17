@@ -1030,6 +1030,258 @@ fn it_allows_zero_decrease_score() {
     assert_eq!(client.get_score(&user), 50);
 }
 
+// ============================================================================
+// Reentrancy Guard Tests
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_increase_score() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+    client.set_score(&updater, &user, &50);
+
+    // Lock the contract to simulate a reentrant call
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.increase_score(&updater, &user, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_decrease_score() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+    client.set_score(&updater, &user, &50);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.decrease_score(&updater, &user, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_set_score() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.set_score(&updater, &user, &50);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_add_boost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+    client.set_score(&updater, &user, &40);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.add_boost(&updater, &user, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_remove_boost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+    client.set_score(&updater, &user, &50);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.remove_boost(&updater, &user, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_set_updater() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.set_updater(&admin, &updater, &true);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_reentrancy_guard_rejects_reentrant_set_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let new_admin = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&crate::storage::REENTRANCY_LOCK, &true);
+    });
+
+    client.set_admin(&new_admin);
+}
+
+/// Test: Mutating functions succeed when NOT reentrant
+#[test]
+fn test_reentrancy_guard_allows_normal_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+
+    // Normal operations should succeed
+    client.set_score(&updater, &user, &50);
+    assert_eq!(client.get_score(&user), 50);
+
+    client.increase_score(&updater, &user, &10);
+    assert_eq!(client.get_score(&user), 60);
+
+    client.decrease_score(&updater, &user, &5);
+    assert_eq!(client.get_score(&user), 55);
+
+    client.add_boost(&updater, &user, &10);
+    assert_eq!(client.get_score(&user), 65);
+
+    client.remove_boost(&updater, &user, &5);
+    assert_eq!(client.get_score(&user), 60);
+
+    let new_admin = Address::generate(&env);
+    client.set_admin(&new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+
+    let new_updater = Address::generate(&env);
+    client.set_updater(&new_admin, &new_updater, &true);
+    assert!(client.is_updater(&new_updater));
+}
+
+/// Test: Guard is properly released after function completes
+#[test]
+fn test_reentrancy_guard_is_released_after_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+
+    let user = Address::generate(&env);
+
+    // First call should succeed
+    client.set_score(&updater, &user, &50);
+
+    // Lock should be released, second call should also succeed
+    client.increase_score(&updater, &user, &10);
+    assert_eq!(client.get_score(&user), 60);
+}
+
 /// Test: Allows setting score to current value
 #[test]
 fn it_allows_setting_score_to_current_value() {

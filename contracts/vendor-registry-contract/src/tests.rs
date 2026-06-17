@@ -147,3 +147,137 @@ fn test_set_vendor_status() {
     let res = client.try_set_vendor_status(&fake_admin, &vendor, &false);
     assert!(res.is_err());
 }
+
+// ============================================================================
+// Reentrancy Guard Tests
+// ============================================================================
+
+#[test]
+fn test_reentrancy_guard_on_register_vendor() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    // Lock the contract
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&types::DataKey::Locked, &true);
+    });
+
+    let name = String::from_str(&env, "Test");
+    let res = client.try_register_vendor(&admin, &vendor, &name);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
+}
+
+#[test]
+fn test_reentrancy_guard_on_deactivate_vendor() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Test");
+    client.register_vendor(&admin, &vendor, &name);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&types::DataKey::Locked, &true);
+    });
+
+    let res = client.try_deactivate_vendor(&admin, &vendor);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
+}
+
+#[test]
+fn test_reentrancy_guard_on_activate_vendor() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Test");
+    client.register_vendor(&admin, &vendor, &name);
+    client.deactivate_vendor(&admin, &vendor);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&types::DataKey::Locked, &true);
+    });
+
+    let res = client.try_activate_vendor(&admin, &vendor);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
+}
+
+#[test]
+fn test_reentrancy_guard_on_set_vendor_status() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Test");
+    client.register_vendor(&admin, &vendor, &name);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&types::DataKey::Locked, &true);
+    });
+
+    let res = client.try_set_vendor_status(&admin, &vendor, &false);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
+}
+
+#[test]
+fn test_reentrancy_guard_allows_normal_operations() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    // Normal operations should still succeed
+    let name = String::from_str(&env, "Test");
+    assert!(client.register_vendor(&admin, &vendor, &name).is_ok());
+
+    assert!(client.deactivate_vendor(&admin, &vendor).is_ok());
+
+    assert!(client.activate_vendor(&admin, &vendor).is_ok());
+
+    assert!(client
+        .set_vendor_status(&admin, &vendor, &false)
+        .is_ok());
+}
+
+#[test]
+fn test_reentrancy_guard_is_released_after_call() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    // First call should succeed
+    let name = String::from_str(&env, "Test");
+    assert!(client.register_vendor(&admin, &vendor, &name).is_ok());
+
+    // Lock should be released, second call should also succeed
+    assert!(client.deactivate_vendor(&admin, &vendor).is_ok());
+    assert!(client.activate_vendor(&admin, &vendor).is_ok());
+}

@@ -96,6 +96,18 @@ pub fn add_learner_mentor(env: &Env, learner: &Address, mentor: &Address) {
     }
 }
 
+pub fn is_reentrancy_locked(env: &Env) -> Result<bool, VouchingError> {
+    Ok(env
+        .storage()
+        .instance()
+        .get(&DataKey::Locked)
+        .unwrap_or(false))
+}
+
+pub fn set_reentrancy_locked(env: &Env, locked: bool) {
+    env.storage().instance().set(&DataKey::Locked, &locked);
+}
+
 pub fn extend_vouch_ttl(env: &Env, mentor: &Address, learner: &Address) {
     extend_persistent_ttl(env, &DataKey::Vouch(mentor.clone(), learner.clone()));
 }

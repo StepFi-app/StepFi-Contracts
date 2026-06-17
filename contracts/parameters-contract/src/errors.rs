@@ -8,4 +8,5 @@ pub enum ParametersError {
     NotAdmin = 2,
     InvalidParameters = 3,
     NotInitialized = 4,
+    ReentrancyDetected = 5,
 }

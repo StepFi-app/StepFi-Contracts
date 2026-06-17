@@ -35,6 +35,8 @@ impl ReputationContract {
         updater.require_auth();
         access::require_updater(&env, &updater);
 
+        Self::enter_non_reentrant(&env);
+
         let old_score = storage::read_score(&env, &user)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         let new_score = old_score
@@ -50,6 +52,8 @@ impl ReputationContract {
 
         let reason = symbol_short!("increase");
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Decrease a user's reputation score by a given amount
@@ -57,6 +61,8 @@ impl ReputationContract {
     pub fn decrease_score(env: Env, updater: Address, user: Address, amount: u32) {
         updater.require_auth();
         access::require_updater(&env, &updater);
+
+        Self::enter_non_reentrant(&env);
 
         let old_score = storage::read_score(&env, &user)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
@@ -69,6 +75,8 @@ impl ReputationContract {
 
         let reason = symbol_short!("decrease");
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Set a user's reputation score to a specific value
@@ -81,12 +89,16 @@ impl ReputationContract {
             soroban_sdk::panic_with_error!(&env, ReputationError::OutOfBounds);
         }
 
+        Self::enter_non_reentrant(&env);
+
         let old_score = storage::read_score(&env, &user)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         storage::write_score(&env, &user, new_score);
 
         let reason = symbol_short!("set");
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Add a mentor vouching boost to a user's reputation score.
@@ -94,6 +106,8 @@ impl ReputationContract {
     pub fn add_boost(env: Env, updater: Address, user: Address, amount: u32) {
         updater.require_auth();
         access::require_updater(&env, &updater);
+
+        Self::enter_non_reentrant(&env);
 
         let old_score = storage::read_score(&env, &user)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
@@ -110,6 +124,8 @@ impl ReputationContract {
 
         let reason = symbol_short!("boost");
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Remove a mentor vouching boost from a user's reputation score.
@@ -117,6 +133,8 @@ impl ReputationContract {
     pub fn remove_boost(env: Env, updater: Address, user: Address, amount: u32) {
         updater.require_auth();
         access::require_updater(&env, &updater);
+
+        Self::enter_non_reentrant(&env);
 
         let old_score = storage::read_score(&env, &user)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
@@ -129,6 +147,8 @@ impl ReputationContract {
 
         let reason = symbol_short!("unboost");
         events::emit_score_changed(&env, &user, old_score, new_score, &reason);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Set or remove an address as an authorized updater
@@ -137,8 +157,12 @@ impl ReputationContract {
         admin.require_auth();
         access::require_admin(&env, &admin);
 
+        Self::enter_non_reentrant(&env);
+
         storage::set_updater(&env, &updater, allowed);
         events::emit_updater_changed(&env, &updater, allowed);
+
+        Self::exit_non_reentrant(&env);
     }
 
     /// Check if an address is an authorized updater
@@ -156,8 +180,13 @@ impl ReputationContract {
             // Admin exists, require current admin authorization
             old_admin.require_auth();
             access::require_admin(&env, &old_admin);
+
+            Self::enter_non_reentrant(&env);
+
             storage::set_admin(&env, &new_admin);
             events::emit_admin_changed(&env, &old_admin, &new_admin);
+
+            Self::exit_non_reentrant(&env);
         } else {
             // No admin exists, allow setting (initialization)
             storage::set_admin(&env, &new_admin);
@@ -171,10 +200,26 @@ impl ReputationContract {
         let admin = storage::get_admin(&env)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
+
+        Self::enter_non_reentrant(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::exit_non_reentrant(&env);
     }
     pub fn get_admin(env: Env) -> Result<Address, ReputationError> {
         storage::get_admin(&env)
+    }
+
+    fn enter_non_reentrant(env: &Env) {
+        if storage::is_reentrancy_locked(env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(env, err))
+        {
+            soroban_sdk::panic_with_error!(env, ReputationError::ReentrancyDetected);
+        }
+        storage::set_reentrancy_locked(env, true);
+    }
+
+    fn exit_non_reentrant(env: &Env) {
+        storage::set_reentrancy_locked(env, false);
     }
 }
 

@@ -5,6 +5,7 @@ use soroban_sdk::{contracttype, Address, String};
 pub enum DataKey {
     // Instance storage
     Admin,
+    Locked,
 
     // Persistent storage
     Vendor(Address),

@@ -34,6 +34,18 @@ impl VouchingContract {
         storage::set_vouch_boost(&env, vouch_boost);
     }
 
+    pub fn set_mentor(env: Env, admin: Address, mentor: Address, verified: bool) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        Self::enter_non_reentrant(&env);
+
+        storage::set_mentor(&env, &mentor, verified);
+        events::emit_mentor_verified(&env, &mentor, verified);
+
+        Self::exit_non_reentrant(&env);
+    }
+
     pub fn vouch(env: Env, mentor: Address, learner: Address) {
         mentor.require_auth();
 
@@ -47,6 +59,8 @@ impl VouchingContract {
                 panic_with_error!(&env, VouchingError::VouchAlreadyActive);
             }
         }
+
+        Self::enter_non_reentrant(&env);
 
         let boost_amount =
             storage::get_vouch_boost(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
@@ -62,6 +76,8 @@ impl VouchingContract {
         storage::add_learner_mentor(&env, &learner, &mentor);
         Self::add_reputation_boost(&env, &learner, boost_amount);
         events::emit_mentor_vouched(&env, &mentor, &learner, boost_amount);
+
+        Self::exit_non_reentrant(&env);
     }
 
     pub fn revoke_vouch(env: Env, mentor: Address, learner: Address) {
@@ -73,10 +89,14 @@ impl VouchingContract {
             panic_with_error!(&env, VouchingError::VouchNotActive);
         }
 
+        Self::enter_non_reentrant(&env);
+
         Self::remove_reputation_boost(&env, &learner, record.boost_amount);
         record.active = false;
         storage::set_vouch(&env, &record);
         events::emit_vouch_revoked(&env, &mentor, &learner, record.boost_amount);
+
+        Self::exit_non_reentrant(&env);
     }
 
     pub fn get_vouches(env: Env, learner: Address) -> Vec<VouchRecord> {
@@ -90,14 +110,6 @@ impl VouchingContract {
         }
 
         records
-    }
-
-    pub fn set_mentor(env: Env, admin: Address, mentor: Address, verified: bool) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
-
-        storage::set_mentor(&env, &mentor, verified);
-        events::emit_mentor_verified(&env, &mentor, verified);
     }
 
     pub fn get_admin(env: Env) -> Result<Address, VouchingError> {
@@ -173,6 +185,19 @@ impl VouchingContract {
         if admin != *caller {
             panic_with_error!(env, VouchingError::NotAdmin);
         }
+    }
+
+    fn enter_non_reentrant(env: &Env) {
+        if storage::is_reentrancy_locked(env)
+            .unwrap_or_else(|err| panic_with_error!(env, err))
+        {
+            panic_with_error!(env, VouchingError::ReentrancyDetected);
+        }
+        storage::set_reentrancy_locked(env, true);
+    }
+
+    fn exit_non_reentrant(env: &Env) {
+        storage::set_reentrancy_locked(env, false);
     }
 }
 

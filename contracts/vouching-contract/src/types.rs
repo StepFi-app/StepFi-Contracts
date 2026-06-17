@@ -18,6 +18,7 @@ pub enum DataKey {
     Admin,
     ReputationContract,
     VouchBoost,
+    Locked,
     Mentor(Address),
     Vouch(Address, Address),
     LearnerVouches(Address),

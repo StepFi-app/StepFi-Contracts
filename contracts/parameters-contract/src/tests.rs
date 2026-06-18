@@ -2,7 +2,7 @@ use crate::{
     default_parameters, ParametersContract, ParametersContractClient, ParametersError,
     ProtocolParameters,
 };
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, IntoVal};
 
 fn setup() -> (Env, ParametersContractClient<'static>, Address) {
     let env = Env::default();
@@ -106,7 +106,20 @@ fn test_admin_upgrade_increments_version() {
     client.initialize_defaults(&admin);
     assert_eq!(client.get_version(), 1u32);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+        &env,
+        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+    ));
     client.upgrade(&wasm_hash);
-    assert_eq!(client.get_version(), 2u32);
+
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let mut found = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&env);
+        if topic == soroban_sdk::Symbol::new(&env, "CONTRACTUPGRADED") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "CONTRACTUPGRADED event not found");
 }

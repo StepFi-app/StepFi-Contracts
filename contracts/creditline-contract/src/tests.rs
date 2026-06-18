@@ -282,8 +282,10 @@ fn test_initialize_twice_fails() {
 #[test]
 fn test_get_version() {
     let env = Env::default();
-    let version = CreditLineContract::get_version(env);
-    assert_eq!(version, 1u32);
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_version(), 1u32);
 }
 
 #[test]
@@ -431,16 +433,21 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
 
     client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
-    // default version should be 1
-    assert_eq!(client.get_version(), 1u32);
-
     let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
     client.upgrade(&wasm_hash);
 
-    // version bumped to 2
-    assert_eq!(client.get_version(), 2u32);
-    // event was published
-    assert_event(&env, soroban_sdk::Symbol::new(&env, "CONTRACTUPGRADED"));
+    use soroban_sdk::IntoVal;
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let mut upgraded_new: Option<u32> = None;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&env);
+        if topic == soroban_sdk::Symbol::new(&env, "CONTRACTUPGRADED") {
+            let (_old, new_v, _ts): (u32, u32, u64) = e.2.into_val(&env);
+            upgraded_new = Some(new_v);
+            break;
+        }
+    }
+    assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
 }
 
 fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {

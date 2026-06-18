@@ -7,12 +7,12 @@ use soroban_sdk::{
 
 mod liquidity_pool {
     soroban_sdk::contractimport!(
-        file = "../../../target/wasm32-unknown-unknown/release/liquidity_pool_contract.wasm"
+        file = "../../target/wasm32-unknown-unknown/release/liquidity_pool_contract.wasm"
     );
 }
 mod vendor_registry {
     soroban_sdk::contractimport!(
-        file = "../../../target/wasm32-unknown-unknown/release/vendor_registry_contract.wasm"
+        file = "../../target/wasm32-unknown-unknown/release/vendor_registry_contract.wasm"
     );
 }
 use liquidity_pool::Client as LiquidityPoolContractClient;

@@ -76,10 +76,20 @@ impl LiquidityPoolContract {
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        // bump and persist version
+        let old_version = storage::get_version(&env).unwrap_or(1u32);
+        let new_version = old_version.checked_add(1).unwrap_or(old_version);
+        storage::set_version(&env, new_version);
+
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::emit_contract_upgraded(&env, old_version, new_version);
     }
     pub fn get_admin(env: Env) -> Result<Address, LiquidityPoolError> {
         storage::get_admin(&env)
+    }
+
+    pub fn get_version(env: Env) -> u32 {
+        storage::get_version(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
     // -------------------------------------------------------------------------

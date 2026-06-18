@@ -32,6 +32,7 @@ Update this file after every completed contract change, fix, or architectural de
 - Added TTL constants (`PERSISTENT_TTL_THRESHOLD`, `PERSISTENT_TTL_EXTEND_TO`) to `creditline-contract/src/storage.rs`
 - Added `upgrade()` function to all 5 contracts: reputation, creditline, liquidity-pool, vendor-registry, parameters
 - All 5 contracts build cleanly: `cargo build` passes with zero errors (3 minor unused constant warnings — acceptable)
+ - Added numeric `VERSION` instance key, `get_version()` API, and `CONTRACTUPGRADED` event across contracts; added unit tests asserting admin gating and version bump on upgrade
 
 ### Deployment
 - Created `scripts/deploy-testnet.sh` — full deployment script covering all 5 contracts in correct dependency order

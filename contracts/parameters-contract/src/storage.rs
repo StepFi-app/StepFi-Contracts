@@ -6,6 +6,7 @@ use crate::types::ProtocolParameters;
 pub const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 pub const PARAMS_KEY: Symbol = symbol_short!("PARAMS");
 pub const REENTRANCY_LOCK: Symbol = symbol_short!("LOCKED");
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&ADMIN_KEY)
@@ -43,4 +44,12 @@ pub fn is_reentrancy_locked(env: &Env) -> Result<bool, ParametersError> {
 
 pub fn set_reentrancy_locked(env: &Env, locked: bool) {
     env.storage().instance().set(&REENTRANCY_LOCK, &locked);
+}
+
+pub fn get_version(env: &Env) -> Result<u32, ParametersError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }

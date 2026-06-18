@@ -20,8 +20,8 @@ pub struct ReputationContract;
 #[contractimpl]
 impl ReputationContract {
     /// Get the version of this contract
-    pub fn get_version() -> Symbol {
-        symbol_short!("v1_0_0")
+    pub fn get_version(env: Env) -> u32 {
+        storage::get_version(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
     }
 
     /// Get the reputation score for a user
@@ -215,7 +215,11 @@ impl ReputationContract {
         admin.require_auth();
 
         Self::enter_non_reentrant(&env);
+        let old = storage::get_version(&env).unwrap_or(1u32);
+        let new = old.checked_add(1).unwrap_or(old);
+        storage::set_version(&env, new);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::emit_contract_upgraded(&env, old, new);
         Self::exit_non_reentrant(&env);
     }
     pub fn get_admin(env: Env) -> Result<Address, ReputationError> {

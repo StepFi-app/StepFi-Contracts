@@ -245,6 +245,8 @@ pub fn set_reentrancy_locked(env: &Env, locked: bool) {
 // 120 days in ledgers
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+// Version key (instance storage) — defaults to 1 when missing
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 /// Extend TTL for a persistent storage entry
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {
@@ -256,4 +258,14 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
 /// Extend TTL for a loan storage entry
 fn extend_persistent_ttl_loan(env: &Env, key: &DataKey) {
     extend_persistent_ttl(env, key);
+}
+
+/// Get the contract version (instance storage). Defaults to 1 when not set.
+pub fn get_version(env: &Env) -> Result<u32, CreditLineError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+/// Set the contract version in instance storage.
+pub fn set_version(env: &Env, version: u32) {
+    env.storage().instance().set(&VERSION_KEY, &version);
 }

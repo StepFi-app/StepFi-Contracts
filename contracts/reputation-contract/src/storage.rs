@@ -7,6 +7,7 @@ pub const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 pub const UPDATERS_MAP: Symbol = symbol_short!("UPDATERS");
 pub const SCORES_MAP: Symbol = symbol_short!("SCORES");
 pub const REENTRANCY_LOCK: Symbol = symbol_short!("LOCKED");
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 /// Get the admin address from storage
 pub fn get_admin(env: &Env) -> Result<Address, ReputationError> {
@@ -82,4 +83,12 @@ pub fn is_reentrancy_locked(env: &Env) -> Result<bool, ReputationError> {
 
 pub fn set_reentrancy_locked(env: &Env, locked: bool) {
     env.storage().instance().set(&REENTRANCY_LOCK, &locked);
+}
+
+pub fn get_version(env: &Env) -> Result<u32, ReputationError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }

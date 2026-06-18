@@ -155,3 +155,11 @@ pub fn emit_loan_in_grace_period(
         ),
     );
 }
+
+/// Emit a contract-upgraded event with old and new version plus timestamp.
+pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
+    env.events().publish(
+        (Symbol::new(env, "CONTRACTUPGRADED"),),
+        (old_version, new_version, env.ledger().timestamp()),
+    );
+}

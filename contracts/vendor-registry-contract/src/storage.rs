@@ -6,6 +6,9 @@ use soroban_sdk::{Address, Env};
 
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+// Version stored in instance storage
+use soroban_sdk::symbol_short;
+pub const VERSION_KEY: soroban_sdk::Symbol = symbol_short!("VERSION");
 
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
@@ -74,4 +77,12 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn get_version(env: &Env) -> Result<u32, Error> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }

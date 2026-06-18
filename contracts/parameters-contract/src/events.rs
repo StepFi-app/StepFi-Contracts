@@ -24,3 +24,10 @@ pub fn emit_admin_updated(env: &Env, old_admin: &Address, new_admin: &Address) {
     env.events()
         .publish((ADMIN_UPDATED, old_admin), new_admin.clone());
 }
+
+pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
+    env.events().publish(
+        (soroban_sdk::Symbol::new(env, "CONTRACTUPGRADED"),),
+        (old_version, new_version, env.ledger().timestamp()),
+    );
+}

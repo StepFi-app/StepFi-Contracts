@@ -17,6 +17,8 @@ pub const REENTRANCY_LOCK_KEY: Symbol = symbol_short!("LOCKED");
 pub const LP_SHARES_PREFIX: Symbol = symbol_short!("LPSHRS");
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+// Version key (instance storage)
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 // --- Admin ---
 
@@ -146,4 +148,12 @@ pub fn is_reentrancy_locked(env: &Env) -> Result<bool, LiquidityPoolError> {
 
 pub fn set_reentrancy_locked(env: &Env, locked: bool) {
     env.storage().instance().set(&REENTRANCY_LOCK_KEY, &locked);
+}
+
+pub fn get_version(env: &Env) -> Result<u32, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }

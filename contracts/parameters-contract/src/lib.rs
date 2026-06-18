@@ -39,11 +39,20 @@ impl ParametersContract {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
         Self::enter_non_reentrant(&env);
+        let old = storage::get_version(&env).unwrap_or(1u32);
+        let new = old.checked_add(1).unwrap_or(old);
+        storage::set_version(&env, new);
+
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::emit_contract_upgraded(&env, old, new);
         Self::exit_non_reentrant(&env);
     }
     pub fn get_admin(env: Env) -> Result<Address, ParametersError> {
         storage::get_admin(&env)
+    }
+
+    pub fn get_version(env: Env) -> u32 {
+        storage::get_version(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {

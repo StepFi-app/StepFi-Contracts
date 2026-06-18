@@ -1,8 +1,8 @@
 use crate::{LiquidityPoolContract, LiquidityPoolContractClient, LiquidityPoolError};
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Events},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal,
 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -421,6 +421,40 @@ fn test_double_counting_does_not_compound_across_multiple_loan_cycles() {
     // Provider must be able to withdraw their full original deposit
     let returned = t.client.withdraw(&provider, &1_000);
     assert_eq!(returned, 1_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract")] // non-admin should be rejected
+fn test_upgrade_requires_admin() {
+    let env = Env::default();
+    let contract_id = env.register(LiquidityPoolContract, ());
+    let client = LiquidityPoolContractClient::new(&env, &contract_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn test_admin_upgrade_bumps_version() {
+    let t = TestEnv::setup();
+    // default version should be 1
+    assert_eq!(t.client.get_version(), 1u32);
+
+    let wasm_hash = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&t.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    t.client.upgrade(&wasm_hash);
+
+    assert_eq!(t.client.get_version(), 2u32);
+    // event observed
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
+    let mut found = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
+        if topic == soroban_sdk::Symbol::new(&t.env, "CONTRACTUPGRADED") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "CONTRACTUPGRADED event not found");
 }
 
 // ─── distribute_interest (SC-17 core) ────────────────────────────────────────

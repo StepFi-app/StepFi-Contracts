@@ -281,8 +281,9 @@ fn test_initialize_twice_fails() {
 
 #[test]
 fn test_get_version() {
-    let version = CreditLineContract::get_version();
-    assert_eq!(version, soroban_sdk::symbol_short!("v1_0_0"));
+    let env = Env::default();
+    let version = CreditLineContract::get_version(env);
+    assert_eq!(version, 1u32);
 }
 
 #[test]
@@ -397,8 +398,63 @@ fn test_set_vendor_registry() {
 
     // Update vendor registry address
     client.set_vendor_registry(&admin, &new_vendor_registry);
+}
 
-    // Verify it was updated (we can't directly query, but no panic means success)
+#[test]
+#[should_panic(expected = "Error(Contract")] // non-admin should be rejected
+fn test_upgrade_requires_admin() {
+    let env = Env::default();
+    // do NOT mock auths - should reject unauthorized caller
+
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+
+    // Attempt upgrade without initialization/admin auth
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn test_admin_upgrade_succeeds_and_bumps_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let rep_id = env.register(MockReputation, ());
+    let vendor_registry_id = env.register(vendor_registry_contract::VendorRegistryContract, ());
+    let lp_id = env.register(MockLiquidityPool, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+
+    client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+
+    // default version should be 1
+    assert_eq!(client.get_version(), 1u32);
+
+    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    client.upgrade(&wasm_hash);
+
+    // version bumped to 2
+    assert_eq!(client.get_version(), 2u32);
+    // event was published
+    assert_event(&env, soroban_sdk::Symbol::new(&env, "CONTRACTUPGRADED"));
+}
+
+fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {
+    use soroban_sdk::IntoVal;
+
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    for event in events.iter() {
+        let topics = event.1.clone();
+        let topic: soroban_sdk::Symbol = topics.get_unchecked(0).into_val(env);
+        if topic == expected {
+            return;
+        }
+    }
+    panic!("expected event was not emitted");
 }
 
 #[test]

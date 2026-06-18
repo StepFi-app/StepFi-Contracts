@@ -53,3 +53,10 @@ pub fn emit_interest_distributed(
         (total_interest, lp_amount, protocol_amount, merchant_amount),
     );
 }
+
+pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
+    env.events().publish(
+        (soroban_sdk::Symbol::new(env, "CONTRACTUPGRADED"),),
+        (old_version, new_version, env.ledger().timestamp()),
+    );
+}

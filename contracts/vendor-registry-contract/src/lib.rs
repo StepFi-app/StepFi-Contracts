@@ -171,4 +171,22 @@ impl VendorRegistryContract {
 
         storage::get_vendor_count(&env)
     }
+
+    /// Get numeric contract version
+    pub fn get_version(env: Env) -> u32 {
+        storage::get_version(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
+    }
+
+    /// Upgrade the contract WASM — admin only
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let old = storage::get_version(&env).unwrap_or(1u32);
+        let new = old.checked_add(1).unwrap_or(old);
+        storage::set_version(&env, new);
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::emit_contract_upgraded(&env, old, new);
+    }
 }

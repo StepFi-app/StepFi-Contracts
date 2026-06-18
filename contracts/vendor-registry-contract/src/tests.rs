@@ -269,3 +269,26 @@ fn test_reentrancy_guard_is_released_after_call() {
     client.deactivate_vendor(&admin, &vendor);
     client.activate_vendor(&admin, &vendor);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract")] // non-admin upgrade rejected
+fn test_upgrade_rejected_for_non_admin() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn test_admin_upgrade_increments_version_and_emits_event() {
+    let env = Env::default();
+    let (client, admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    assert_eq!(client.get_version(), 1u32);
+    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    client.upgrade(&wasm_hash);
+    assert_eq!(client.get_version(), 2u32);
+}

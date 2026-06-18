@@ -27,3 +27,10 @@ pub fn emit_admin_changed(env: &Env, old_admin: &Address, new_admin: &Address) {
     env.events()
         .publish((ADMIN_CHANGED,), (old_admin, new_admin));
 }
+
+pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
+    env.events().publish(
+        (Symbol::new(env, "CONTRACTUPGRADED"),),
+        (old_version, new_version, env.ledger().timestamp()),
+    );
+}

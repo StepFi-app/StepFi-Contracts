@@ -88,6 +88,7 @@ impl CreditLineContract {
             repayment_schedule.clone(),
             score,
             LoanStatus::Active,
+            true,
             loan_type,
         )?;
         loan.funded_at = env.ledger().timestamp();
@@ -136,6 +137,7 @@ impl CreditLineContract {
             repayment_schedule.clone(),
             score,
             LoanStatus::Pending,
+            false,
             loan_type,
         )?;
 
@@ -344,6 +346,7 @@ impl CreditLineContract {
         score: u32,
         status: LoanStatus,
         loan_type: LoanType,
+        vendor_paid: bool,
     ) -> Result<Loan, CreditLineError> {
         Self::validate_guarantee(env, total_amount, guarantee_amount)?;
         Self::validate_vendor(env, &vendor)?;
@@ -383,6 +386,7 @@ impl CreditLineContract {
             remaining_balance,
             repayment_schedule,
             status,
+            vendor_paid,
             loan_type,
             created_at: env.ledger().timestamp(),
             funded_at: 0,
@@ -564,16 +568,63 @@ impl CreditLineContract {
             panic_with_error!(&env, CreditLineError::InvalidLoanStatus);
         }
 
-        // 4. Transition to Active
-        loan.status = LoanStatus::Active;
-
-        // 5. Write back with TTL extension
+        Self::enter_non_reentrant(&env);
+        Self::pay_vendor_internal(&env, &mut loan)
+            .unwrap_or_else(|err| {
+                Self::exit_non_reentrant(&env);
+                panic_with_error!(&env, err)
+            });
         storage::write_loan(&env, &loan);
+        Self::exit_non_reentrant(&env);
 
         // 6. Emit event
         events::emit_loan_approved(&env, loan_id);
 
         loan
+    }
+
+    pub fn pay_vendor(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let mut loan = storage::read_loan(&env, loan_id)?;
+        if loan.status != LoanStatus::Pending {
+            return Err(CreditLineError::InvalidLoanStatus);
+        }
+
+        Self::enter_non_reentrant(&env);
+        let result = Self::pay_vendor_internal(&env, &mut loan);
+        if result.is_ok() {
+            storage::write_loan(&env, &loan);
+        }
+        Self::exit_non_reentrant(&env);
+        result
+    }
+
+    fn pay_vendor_internal(env: &Env, loan: &mut Loan) -> Result<(), CreditLineError> {
+        if loan.vendor_paid {
+            return Err(CreditLineError::VendorAlreadyPaid);
+        }
+
+        let liquidity_pool = storage::get_liquidity_pool(env)?
+            .ok_or(CreditLineError::InsufficientLiquidity)?;
+        let pool_contribution = safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)?;
+
+        if pool_contribution > 0 {
+            let lp_client = LiquidityPoolContractClient::new(env, &liquidity_pool);
+            lp_client
+                .fund_loan(&env.current_contract_address(), &loan.vendor, &pool_contribution)
+                .unwrap_or_else(|err| panic_with_error!(env, err));
+        }
+
+        loan.vendor_paid = true;
+        loan.status = LoanStatus::Active;
+        loan.funded_at = env.ledger().timestamp();
+
+        storage::increase_user_active_debt(env, &loan.borrower, loan.remaining_balance)?;
+        events::emit_vendor_paid(&env, loan.loan_id, &loan.vendor, pool_contribution);
+
+        Ok(())
     }
 
     pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {

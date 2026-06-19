@@ -30,5 +30,6 @@ pub enum CreditLineError {
     InvalidInstallmentIndex = 23,
     InstallmentAlreadyPaid = 24,
     InvalidLoanStatus = 25,
-    NotInitialized = 26,
+    VendorAlreadyPaid = 26,
+    NotInitialized = 27,
 }

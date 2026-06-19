@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const VENDOR_PAID: Symbol = symbol_short!("VENDPAID");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
 
@@ -134,6 +135,13 @@ pub fn emit_installment_paid(
             remaining_balance,
             env.ledger().timestamp(),
         ),
+    );
+}
+
+pub fn emit_vendor_paid(env: &Env, loan_id: u64, vendor: &Address, amount: i128) {
+    env.events().publish(
+        (VENDOR_PAID, loan_id),
+        (vendor, amount, env.ledger().timestamp()),
     );
 }
 

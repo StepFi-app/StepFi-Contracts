@@ -60,6 +60,7 @@ pub struct Loan {
     pub remaining_balance: i128,
     pub repayment_schedule: soroban_sdk::Vec<RepaymentInstallment>,
     pub status: LoanStatus,
+    pub vendor_paid: bool,
     pub loan_type: LoanType,
     pub created_at: u64,                 // Unix timestamp
     pub funded_at: u64,                  // 0 means not funded yet

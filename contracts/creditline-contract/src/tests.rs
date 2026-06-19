@@ -12,7 +12,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events, Ledger},
     token::Client as TokenClient,
-    Address, Env, String as SorobanString,
+    Address, Env, String as SorobanString, Symbol,
 };
 use vendor_registry_contract::VendorRegistryContract;
 
@@ -43,8 +43,21 @@ impl MockReputation {
 #[contract]
 pub struct MockLiquidityPool;
 
+const MOCK_LP_TOKEN_KEY: Symbol = Symbol::short("LP_TOKEN");
+
 #[contractimpl]
 impl MockLiquidityPool {
+    pub fn set_token(env: Env, token: Address) {
+        env.storage().instance().set(&MOCK_LP_TOKEN_KEY, &token);
+    }
+
+    fn get_token(env: &Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&MOCK_LP_TOKEN_KEY)
+            .unwrap_or_else(|| panic!("Liquidity pool token not configured"))
+    }
+
     pub fn get_pool_stats(_env: Env) -> PoolStats {
         PoolStats {
             total_liquidity: 1_000_000,
@@ -55,7 +68,16 @@ impl MockLiquidityPool {
         }
     }
 
-    pub fn fund_loan(_env: Env, _creditline: Address, _vendor: Address, _amount: i128) {}
+    pub fn set_token_address(env: Env, token: Address) {
+        env.storage().instance().set(&MOCK_LP_TOKEN_KEY, &token);
+    }
+
+    pub fn fund_loan(env: Env, creditline: Address, vendor: Address, amount: i128) {
+        creditline.require_auth();
+        let token_address = Self::get_token(&env);
+        let token_client = TokenClient::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &vendor, &amount);
+    }
 
     pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
 
@@ -124,6 +146,11 @@ impl TestCtx {
         let token_id = env
             .register_stellar_asset_contract_v2(token_admin.clone())
             .address();
+
+        // Seed the liquidity pool so it can fund approved loans in tests.
+        let asset_client = StellarAssetClient::new(&env, &token_id);
+        asset_client.mint(&lp_id, &1_000_000);
+
         client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
         TestCtx {
@@ -2888,12 +2915,56 @@ fn test_approve_loan_success() {
     let loan_id = t.create_default_request(&user, &vendor);
     let pending = t.client.get_loan(&loan_id);
     assert_eq!(pending.status, LoanStatus::Pending);
+    assert!(!pending.vendor_paid);
 
     let approved = t.client.approve_loan(&loan_id);
     assert_eq!(approved.status, LoanStatus::Active);
+    assert!(approved.vendor_paid);
 
     let stored = t.client.get_loan(&loan_id);
     assert_eq!(stored.status, LoanStatus::Active);
+    assert!(stored.vendor_paid);
+
+    let balance = t.balance(&vendor);
+    let expected_payment = pending.total_amount - pending.guarantee_amount;
+    assert_eq!(balance, expected_payment);
+}
+
+#[test]
+fn test_pay_vendor_direct_call_marks_vendor_paid() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let pending = t.client.get_loan(&loan_id);
+    assert_eq!(pending.status, LoanStatus::Pending);
+    assert!(!pending.vendor_paid);
+
+    let result = t.client.pay_vendor(&loan_id);
+    assert!(result.is_ok());
+
+    let stored = t.client.get_loan(&loan_id);
+    assert_eq!(stored.status, LoanStatus::Active);
+    assert!(stored.vendor_paid);
+
+    let balance = t.balance(&vendor);
+    let expected_payment = pending.total_amount - pending.guarantee_amount;
+    assert_eq!(balance, expected_payment);
+}
+
+#[test]
+fn test_pay_vendor_prevents_double_payment() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    assert!(t.client.pay_vendor(&loan_id).is_ok());
+
+    let second = t.client.pay_vendor(&loan_id);
+    assert!(second.is_err());
+    assert_eq!(second.unwrap_err(), CreditLineError::VendorAlreadyPaid);
 }
 
 #[test]

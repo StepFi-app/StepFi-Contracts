@@ -12,7 +12,7 @@ mod tests;
 
 use errors::Error;
 use soroban_sdk::{contract, contractimpl, Address, Env, String};
-use types::VendorInfo;
+use types::{VendorInfo, VendorStatus};
 
 // Export Error type for external use
 pub use errors::Error as VendorRegistryError;
@@ -71,7 +71,7 @@ impl VendorRegistryContract {
         let info = VendorInfo {
             name: name.clone(),
             registration_date: env.ledger().timestamp(),
-            active: true,
+            status: VendorStatus::Pending,
             total_sales: 0,
         };
 
@@ -84,7 +84,50 @@ impl VendorRegistryContract {
         Ok(())
     }
 
-    /// Deactivates an existing vendor
+    /// Approves a pending vendor so they can receive loans
+    pub fn approve_vendor(env: Env, admin: Address, vendor: Address) -> Result<(), Error> {
+        if !storage::has_admin(&env) {
+            return Err(Error::NotInitialized);
+        }
+
+        access::require_admin(&env, &admin)?;
+
+        Self::check_non_reentrant(&env)?;
+
+        let mut info = storage::get_vendor(&env, &vendor)?;
+        if info.status != VendorStatus::Pending {
+            return Err(Error::VendorNotPending);
+        }
+        info.status = VendorStatus::Approved;
+        storage::set_vendor(&env, &vendor, &info);
+        events::publish_vendor_status(&env, vendor, VendorStatus::Approved);
+
+        Self::exit_non_reentrant(&env);
+
+        Ok(())
+    }
+
+    /// Suspends an approved vendor, preventing new loans
+    pub fn suspend_vendor(env: Env, admin: Address, vendor: Address) -> Result<(), Error> {
+        if !storage::has_admin(&env) {
+            return Err(Error::NotInitialized);
+        }
+
+        access::require_admin(&env, &admin)?;
+
+        Self::check_non_reentrant(&env)?;
+
+        let mut info = storage::get_vendor(&env, &vendor)?;
+        info.status = VendorStatus::Suspended;
+        storage::set_vendor(&env, &vendor, &info);
+        events::publish_vendor_status(&env, vendor, VendorStatus::Suspended);
+
+        Self::exit_non_reentrant(&env);
+
+        Ok(())
+    }
+
+    /// Deactivates an existing vendor (legacy — maps to Suspended)
     pub fn deactivate_vendor(env: Env, admin: Address, vendor: Address) -> Result<(), Error> {
         if !storage::has_admin(&env) {
             return Err(Error::NotInitialized);
@@ -95,16 +138,16 @@ impl VendorRegistryContract {
         Self::check_non_reentrant(&env)?;
 
         let mut info = storage::get_vendor(&env, &vendor)?;
-        info.active = false;
+        info.status = VendorStatus::Suspended;
         storage::set_vendor(&env, &vendor, &info);
-        events::publish_vendor_status(&env, vendor, false);
+        events::publish_vendor_status(&env, vendor, VendorStatus::Suspended);
 
         Self::exit_non_reentrant(&env);
 
         Ok(())
     }
 
-    /// Activates an existing vendor
+    /// Activates an existing vendor (legacy — maps to Approved)
     pub fn activate_vendor(env: Env, admin: Address, vendor: Address) -> Result<(), Error> {
         if !storage::has_admin(&env) {
             return Err(Error::NotInitialized);
@@ -115,17 +158,17 @@ impl VendorRegistryContract {
         Self::check_non_reentrant(&env)?;
 
         let mut info = storage::get_vendor(&env, &vendor)?;
-        info.active = true;
+        info.status = VendorStatus::Approved;
         storage::set_vendor(&env, &vendor, &info);
-        events::publish_vendor_status(&env, vendor, true);
+        events::publish_vendor_status(&env, vendor, VendorStatus::Approved);
 
         Self::exit_non_reentrant(&env);
 
         Ok(())
     }
 
-    /// Sets a vendor's active status (admin only).
-    /// Pass `active = true` to activate, `active = false` to deactivate.
+    /// Sets a vendor's active status (admin only, legacy).
+    /// Pass `active = true` to approve, `active = false` to suspend.
     pub fn set_vendor_status(
         env: Env,
         admin: Address,
@@ -141,9 +184,14 @@ impl VendorRegistryContract {
         Self::check_non_reentrant(&env)?;
 
         let mut info = storage::get_vendor(&env, &vendor)?;
-        info.active = active;
+        let new_status = if active {
+            VendorStatus::Approved
+        } else {
+            VendorStatus::Suspended
+        };
+        info.status = new_status.clone();
         storage::set_vendor(&env, &vendor, &info);
-        events::publish_vendor_status(&env, vendor, active);
+        events::publish_vendor_status(&env, vendor, new_status);
 
         Self::exit_non_reentrant(&env);
 
@@ -152,7 +200,7 @@ impl VendorRegistryContract {
 
     pub fn is_active(env: Env, vendor: Address) -> bool {
         storage::get_vendor(&env, &vendor)
-            .map(|info| info.active)
+            .map(|info| info.status == VendorStatus::Approved)
             .unwrap_or(false)
     }
 

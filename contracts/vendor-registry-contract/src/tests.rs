@@ -58,13 +58,14 @@ fn test_registration_flow() {
     let name = String::from_str(&env, "Galaxy Tech Supplies");
     client.register_vendor(&admin, &vendor, &name);
 
-    assert!(client.is_active(&vendor));
+    // Vendor starts as Pending, not active
+    assert!(!client.is_active(&vendor));
 
     // get_vendor_info automatically unwraps on success in the test client
     let info = client.get_vendor_info(&vendor);
     assert_eq!(info.name, name);
     assert_eq!(info.registration_date, 1000000);
-    assert!(info.active);
+    assert_eq!(info.status, types::VendorStatus::Pending);
     assert_eq!(info.total_sales, 0);
     assert_eq!(client.get_vendor_count(), 1);
 }
@@ -107,17 +108,36 @@ fn test_activation_and_deactivation() {
     let name = String::from_str(&env, "Nebula Cafe");
     client.register_vendor(&admin, &vendor, &name);
 
-    assert!(client.is_active(&vendor));
-
-    // Deactivate vendor
-    client.deactivate_vendor(&admin, &vendor);
+    // Vendor starts as Pending (not active)
     assert!(!client.is_active(&vendor));
-    assert!(!client.get_vendor_info(&vendor).active);
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Pending
+    );
 
-    // Activate vendor
+    // Approve vendor
+    client.approve_vendor(&admin, &vendor);
+    assert!(client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Approved
+    );
+
+    // Suspend vendor
+    client.suspend_vendor(&admin, &vendor);
+    assert!(!client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Suspended
+    );
+
+    // Reactivate via legacy activate_vendor
     client.activate_vendor(&admin, &vendor);
     assert!(client.is_active(&vendor));
-    assert!(client.get_vendor_info(&vendor).active);
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Approved
+    );
 }
 
 #[test]
@@ -129,21 +149,112 @@ fn test_set_vendor_status() {
     let name = String::from_str(&env, "Quasar Goods");
     client.register_vendor(&admin, &vendor, &name);
 
-    // Vendor starts active
-    assert!(client.is_active(&vendor));
+    // Vendor starts as Pending (not active)
+    assert!(!client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Pending
+    );
 
-    // Deactivate via set_vendor_status
+    // Deactivate via set_vendor_status (false → Suspended)
     client.set_vendor_status(&admin, &vendor, &false);
     assert!(!client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Suspended
+    );
 
-    // Reactivate via set_vendor_status
+    // Reactivate via set_vendor_status (true → Approved)
     client.set_vendor_status(&admin, &vendor, &true);
     assert!(client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Approved
+    );
 
     // Non-admin must be rejected
     let fake_admin = Address::generate(&env);
     let res = client.try_set_vendor_status(&fake_admin, &vendor, &false);
     assert!(res.is_err());
+}
+
+#[test]
+fn test_approve_vendor_sets_status_to_approved() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Approve Me");
+    client.register_vendor(&admin, &vendor, &name);
+
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Pending
+    );
+
+    client.approve_vendor(&admin, &vendor);
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Approved
+    );
+    assert!(client.is_active(&vendor));
+}
+
+#[test]
+fn test_approve_vendor_rejects_non_pending() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Already Approved");
+    client.register_vendor(&admin, &vendor, &name);
+    client.approve_vendor(&admin, &vendor);
+
+    // Approving an already approved vendor should fail
+    let res = client.try_approve_vendor(&admin, &vendor);
+    assert_eq!(res, Err(Ok(Error::VendorNotPending)));
+}
+
+#[test]
+fn test_suspend_vendor_sets_status_to_suspended() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Suspend Me");
+    client.register_vendor(&admin, &vendor, &name);
+    client.approve_vendor(&admin, &vendor);
+
+    assert!(client.is_active(&vendor));
+
+    client.suspend_vendor(&admin, &vendor);
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Suspended
+    );
+    assert!(!client.is_active(&vendor));
+}
+
+#[test]
+fn test_suspended_vendor_can_be_approved_again() {
+    let env = Env::default();
+    let (client, admin, vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Back and Forth");
+    client.register_vendor(&admin, &vendor, &name);
+    client.approve_vendor(&admin, &vendor);
+    client.suspend_vendor(&admin, &vendor);
+
+    assert!(!client.is_active(&vendor));
+
+    // Re-approve via legacy activate_vendor
+    client.activate_vendor(&admin, &vendor);
+    assert!(client.is_active(&vendor));
+    assert_eq!(
+        client.get_vendor_info(&vendor).status,
+        types::VendorStatus::Approved
+    );
 }
 
 // ============================================================================
@@ -268,6 +379,51 @@ fn test_reentrancy_guard_is_released_after_call() {
     // Lock should be released, second call should also succeed
     client.deactivate_vendor(&admin, &vendor);
     client.activate_vendor(&admin, &vendor);
+}
+
+#[test]
+fn test_reentrancy_guard_on_approve_vendor() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Test");
+    client.register_vendor(&admin, &vendor, &name);
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&types::DataKey::Locked, &true);
+    });
+
+    let res = client.try_approve_vendor(&admin, &vendor);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
+}
+
+#[test]
+fn test_reentrancy_guard_on_suspend_vendor() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    client.initialize(&admin);
+    env.mock_all_auths();
+
+    let name = String::from_str(&env, "Test");
+    client.register_vendor(&admin, &vendor, &name);
+    client.approve_vendor(&admin, &vendor);
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&types::DataKey::Locked, &true);
+    });
+
+    let res = client.try_suspend_vendor(&admin, &vendor);
+    assert_eq!(res, Err(Ok(Error::ReentrancyDetected)));
 }
 
 #[test]

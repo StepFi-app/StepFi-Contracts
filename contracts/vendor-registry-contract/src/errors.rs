@@ -13,4 +13,5 @@ pub enum Error {
     Overflow = 7,
     ReentrancyDetected = 8,
     Underflow = 9,
+    VendorNotPending = 10,
 }

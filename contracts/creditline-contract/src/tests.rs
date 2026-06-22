@@ -154,6 +154,7 @@ impl TestCtx {
     }
 
     /// Register a vendor in the vendor registry (idempotent - won't fail if already registered)
+    /// and approve it so loans can be created.
     fn register_vendor(&self, vendor: &Address, name: &str) {
         use soroban_sdk::{IntoVal, Symbol};
         let vendor_name = SorobanString::from_str(&self.env, name);
@@ -164,6 +165,12 @@ impl TestCtx {
             &self.vendor_registry_id,
             &Symbol::new(&self.env, "register_vendor"),
             (&self.admin, vendor, vendor_name).into_val(&self.env),
+        );
+        // Approve the vendor so create_loan can proceed
+        let _ = self.env.try_invoke_contract::<(), soroban_sdk::Error>(
+            &self.vendor_registry_id,
+            &Symbol::new(&self.env, "approve_vendor"),
+            (&self.admin, vendor).into_val(&self.env),
         );
     }
 
@@ -887,6 +894,12 @@ fn test_mark_defaulted_success() {
         &Symbol::new(&env, "register_vendor"),
         (&admin, &vendor, vendor_name).into_val(&env),
     );
+    // Approve the vendor
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
+    );
 
     client.initialize(
         &admin,
@@ -961,6 +974,12 @@ fn test_mark_defaulted_too_early_fails() {
         &vendor_registry_id,
         &Symbol::new(&env, "register_vendor"),
         (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    // Approve the vendor
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
     );
 
     client.initialize(
@@ -1150,6 +1169,12 @@ fn test_create_loan_rejected_when_reputation_below_threshold() {
         &vendor_registry_id,
         &Symbol::new(&env, "register_vendor"),
         (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    // Approve the vendor
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
     );
 
     client.initialize(

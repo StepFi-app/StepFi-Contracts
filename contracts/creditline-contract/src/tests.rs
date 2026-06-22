@@ -2391,6 +2391,8 @@ impl RealIntegrationCtx {
         let vendor_name = SorobanString::from_str(&self.env, name);
         self.vendor_registry
             .register_vendor(&self.admin, vendor, &vendor_name);
+        self.vendor_registry
+            .approve_vendor(&self.admin, vendor);
     }
 
     fn single_installment(

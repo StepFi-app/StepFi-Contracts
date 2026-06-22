@@ -6,7 +6,7 @@ pub enum DataKey {
     // Instance storage
     Admin,
     Locked,
-
+SchemaVersion,
     // Persistent storage
     Vendor(Address),
     VendorCount,

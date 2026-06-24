@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::errors::Error;
 
 pub fn add_u64(a: u64, b: u64) -> Result<u64, Error> {

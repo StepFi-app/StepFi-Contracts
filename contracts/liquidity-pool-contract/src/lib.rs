@@ -303,13 +303,15 @@ impl LiquidityPoolContract {
         Ok(())
     }
 
-    /// Receive a forfeited guarantee on loan default.
+    /// Receive a forfeited guarantee on loan default and liquidate funds.
     /// The amount offsets the loss: it is added back to total_liquidity
     /// and reduces locked_liquidity by the same amount (partial recovery).
-    pub fn receive_guarantee(
+    pub fn liquidate_funds(
         env: Env,
         creditline: Address,
+        _loan_id: u64,
         amount: i128,
+        _sponsor: Address,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
         Self::require_creditline(&env, &creditline);
@@ -337,6 +339,7 @@ impl LiquidityPoolContract {
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&creditline, &env.current_contract_address(), &amount);
 
+        // We emit guarantee received with the same parameters as before or expanded if needed.
         events::emit_guarantee_received(&env, &creditline, amount);
         Self::exit_non_reentrant(&env);
         Ok(())

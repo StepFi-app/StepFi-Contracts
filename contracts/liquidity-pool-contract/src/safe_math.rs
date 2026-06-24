@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::errors::LiquidityPoolError;
 
 pub fn add_i128(a: i128, b: i128) -> Result<i128, LiquidityPoolError> {

@@ -483,39 +483,43 @@ impl CreditLineContract {
         Ok(())
     }
 
-    pub fn mark_defaulted(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
-        let mut loan = storage::read_loan(&env, loan_id)?;
+    pub fn can_default(env: Env, loan_id: u64) -> bool {
+        let loan = match storage::read_loan(&env, loan_id) {
+            Ok(l) => l,
+            Err(_) => return false,
+        };
 
         if loan.status != LoanStatus::Active {
-            return Err(CreditLineError::LoanNotActive);
+            return false;
         }
 
-        let last_installment = loan
-            .repayment_schedule
-            .last()
-            .ok_or(CreditLineError::Overflow)?;
+        let last_installment = match loan.repayment_schedule.last() {
+            Some(i) => i,
+            None => return false,
+        };
 
         let now = env.ledger().timestamp();
-        if now <= last_installment.due_date {
-            return Err(CreditLineError::LoanNotOverdue);
-        }
-
         let params = Self::get_protocol_parameters(&env);
-        let grace_ends_at = last_installment
+        let grace_ends_at = match last_installment
             .due_date
             .checked_add(params.grace_period_seconds)
-            .ok_or(CreditLineError::Overflow)?;
+        {
+            Some(t) => t,
+            None => return false,
+        };
 
-        if now <= grace_ends_at {
-            // Still within the grace window — emit a warning and block hard default.
-            events::emit_loan_in_grace_period(
-                &env,
-                &loan.borrower,
-                loan_id,
-                loan.remaining_balance,
-                grace_ends_at,
-            );
-            return Err(CreditLineError::LoanInGracePeriod);
+        now > grace_ends_at
+    }
+
+    pub fn check_default(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        let mut loan = storage::read_loan(&env, loan_id)?;
+
+        if loan.status == LoanStatus::Defaulted {
+            return Err(CreditLineError::AlreadyDefaulted);
+        }
+
+        if !Self::can_default(env.clone(), loan_id) {
+            return Err(CreditLineError::LoanNotDefaultable);
         }
 
         let lp_address =
@@ -532,7 +536,12 @@ impl CreditLineContract {
         Self::authorize_token_transfer(&env, &token_address, &lp_address, loan.guarantee_amount);
 
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
-        lp_client.receive_guarantee(&env.current_contract_address(), &loan.guarantee_amount);
+        lp_client.liquidate_funds(
+            &env.current_contract_address(),
+            &loan_id,
+            &loan.guarantee_amount,
+            &loan.borrower,
+        );
 
         events::emit_loan_defaulted(
             &env,

@@ -440,14 +440,21 @@ fn test_admin_upgrade_bumps_version() {
     // default version should be 1
     assert_eq!(t.client.get_version(), 1u32);
 
-    let wasm_hash = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
-        &t.env,
-        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
-    ));
+    let wasm_hash = t
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &t.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     t.client.upgrade(&wasm_hash);
 
     // event observed
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
     let mut found = false;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
@@ -589,7 +596,8 @@ fn test_receive_guarantee_reduces_locked_and_recovers_liquidity() {
 
     // Default: guarantee of 100 returned
     t.mint(&t.creditline, 100);
-    t.client.receive_guarantee(&t.creditline, &100);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &100, &t.creditline);
 
     let stats = t.client.get_pool_stats();
     // locked was 500, reduced by 100 → 400
@@ -1679,9 +1687,12 @@ fn test_guarantee_receipt_on_default() {
 
     // 3. Simulate default with partial guarantee receipt
     context.mint(&context.creditline, guarantee_amount);
-    context
-        .client
-        .receive_guarantee(&context.creditline, &guarantee_amount);
+    context.client.liquidate_funds(
+        &context.creditline,
+        &1,
+        &guarantee_amount,
+        &context.creditline,
+    );
 
     // 4. Verify locked_liquidity reduced by guarantee amount
     let after_guarantee_stats = context.client.get_pool_stats();
@@ -2182,14 +2193,16 @@ fn test_receive_repayment_unauthorized_caller_fails() {
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_receive_guarantee_with_zero_amount_fails() {
     let t = TestEnv::setup();
-    t.client.receive_guarantee(&t.creditline, &0);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &0, &t.creditline);
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_receive_guarantee_negative_amount_fails() {
     let t = TestEnv::setup();
-    t.client.receive_guarantee(&t.creditline, &-100);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &-100, &t.creditline);
 }
 
 #[test]
@@ -2197,7 +2210,7 @@ fn test_receive_guarantee_negative_amount_fails() {
 fn test_receive_guarantee_unauthorized_caller_fails() {
     let t = TestEnv::setup();
     let intruder = Address::generate(&t.env);
-    t.client.receive_guarantee(&intruder, &100);
+    t.client.liquidate_funds(&intruder, &1, &100, &intruder);
 }
 
 #[test]
@@ -2214,7 +2227,8 @@ fn test_receive_guarantee_exceeds_locked_liquidity() {
     // Receive guarantee of 600 (more than locked 500)
     // The contract should cap recovery at locked amount (500)
     t.mint(&t.creditline, 600);
-    t.client.receive_guarantee(&t.creditline, &600);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &600, &t.creditline);
 
     let stats = t.client.get_pool_stats();
     // Locked should be reduced to 0 (capped at 500)
@@ -2293,7 +2307,8 @@ fn test_partial_guarantee_recovery_multiple_defaults() {
 
     // First default with partial guarantee
     t.mint(&t.creditline, 1_000);
-    t.client.receive_guarantee(&t.creditline, &1_000);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &1_000, &t.creditline);
 
     let stats_after_first = t.client.get_pool_stats();
     assert_eq!(stats_after_first.locked_liquidity, 4_000); // 5000 - 1000
@@ -2301,7 +2316,8 @@ fn test_partial_guarantee_recovery_multiple_defaults() {
 
     // Second default with partial guarantee
     t.mint(&t.creditline, 800);
-    t.client.receive_guarantee(&t.creditline, &800);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &800, &t.creditline);
 
     let stats_after_second = t.client.get_pool_stats();
     assert_eq!(stats_after_second.locked_liquidity, 3_200); // 4000 - 800
@@ -2404,7 +2420,8 @@ fn test_loan_funding_and_guarantee_recovery_cycle() {
 
     // Partial guarantee recovery
     t.mint(&t.creditline, 500);
-    t.client.receive_guarantee(&t.creditline, &500);
+    t.client
+        .liquidate_funds(&t.creditline, &1, &500, &t.creditline);
 
     let stats_after_guarantee = t.client.get_pool_stats();
     assert_eq!(stats_after_guarantee.locked_liquidity, 1_500);

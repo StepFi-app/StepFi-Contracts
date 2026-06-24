@@ -59,7 +59,14 @@ impl MockLiquidityPool {
 
     pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
 
-    pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+    pub fn liquidate_funds(
+        _env: Env,
+        _creditline: Address,
+        _loan_id: u64,
+        _amount: i128,
+        _sponsor: Address,
+    ) {
+    }
 }
 
 // A mock reputation contract that always returns a score below the threshold.
@@ -436,15 +443,26 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
     let vendor_registry_id = env.register(vendor_registry_contract::VendorRegistryContract, ());
     let lp_id = env.register(MockLiquidityPool, ());
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
 
     client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     client.upgrade(&wasm_hash);
 
     use soroban_sdk::IntoVal;
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = env.events().all();
     let mut upgraded_new: Option<u32> = None;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&env);
@@ -454,13 +472,22 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
             break;
         }
     }
-    assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
+    assert_eq!(
+        upgraded_new,
+        Some(2u32),
+        "CONTRACTUPGRADED new_version should be 2"
+    );
 }
 
+#[allow(dead_code)]
 fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {
     use soroban_sdk::IntoVal;
 
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = env.events().all();
     for event in events.iter() {
         let topics = event.1.clone();
         let topic: soroban_sdk::Symbol = topics.get_unchecked(0).into_val(env);
@@ -857,7 +884,7 @@ fn test_create_loan_with_positive_total_negative_guarantee() {
 }
 
 #[test]
-fn test_mark_defaulted_success() {
+fn test_check_default_success() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -930,16 +957,16 @@ fn test_mark_defaulted_success() {
     // Time Travel past the due date
     env.ledger().set_timestamp(12000);
 
-    // This calls mark_defaulted which internally calls MockReputation::decrease_score
-    client.mark_defaulted(&loan_id);
+    // This calls check_default which internally calls MockReputation::decrease_score
+    client.check_default(&loan_id);
 
     let updated_loan = client.get_loan(&loan_id);
     assert_eq!(updated_loan.status, LoanStatus::Defaulted);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #12)")] // LoanNotOverdue
-fn test_mark_defaulted_too_early_fails() {
+#[should_panic(expected = "Error(Contract, #27)")] // LoanNotDefaultable
+fn test_check_default_too_early_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1007,7 +1034,7 @@ fn test_mark_defaulted_too_early_fails() {
     let loan_id = client.create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     // This should fail because 10000 < 20000
-    client.mark_defaulted(&loan_id);
+    client.check_default(&loan_id);
 }
 
 // ─── loan creation — happy path ───────────────────────────────────────────────
@@ -1227,7 +1254,7 @@ fn test_create_loan_emits_loan_created_event() {
 }
 
 #[test]
-fn test_mark_defaulted_emits_loan_defaulted_event() {
+fn test_check_default_emits_loan_defaulted_event() {
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
@@ -1241,7 +1268,7 @@ fn test_mark_defaulted_emits_loan_defaulted_event() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let events = t.env.events().all();
     assert!(
@@ -1253,8 +1280,8 @@ fn test_mark_defaulted_emits_loan_defaulted_event() {
 // ─── default flow ─────────────────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #7)")] // LoanNotActive
-fn test_mark_defaulted_on_already_defaulted_loan_fails() {
+#[should_panic(expected = "Error(Contract, #28)")] // AlreadyDefaulted
+fn test_check_default_on_already_defaulted_loan_fails() {
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
@@ -1268,17 +1295,17 @@ fn test_mark_defaulted_on_already_defaulted_loan_fails() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     // Second call must fail — loan is no longer Active
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #6)")] // LoanNotFound
-fn test_mark_defaulted_on_nonexistent_loan_fails() {
+fn test_check_default_on_nonexistent_loan_fails() {
     let t = TestCtx::setup();
-    t.client.mark_defaulted(&999);
+    t.client.check_default(&999);
 }
 
 #[test]
@@ -1299,7 +1326,7 @@ fn test_default_flow_loan_status_becomes_defaulted() {
     assert_eq!(before.status, LoanStatus::Active);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let after = t.client.get_loan(&loan_id);
     assert_eq!(after.status, LoanStatus::Defaulted);
@@ -1320,7 +1347,7 @@ fn test_default_flow_preserves_loan_amounts() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.total_amount, DEFAULT_PRINCIPAL);
@@ -1329,7 +1356,7 @@ fn test_default_flow_preserves_loan_amounts() {
 }
 
 #[test]
-fn test_mark_defaulted_at_exactly_due_date_boundary() {
+fn test_check_default_at_exactly_due_date_boundary() {
     // Ledger timestamp == due_date: still NOT overdue (the condition is `timestamp > due_date`)
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
@@ -1344,15 +1371,15 @@ fn test_mark_defaulted_at_exactly_due_date_boundary() {
         .client
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
-    // Set timestamp to exactly the due date — mark_defaulted should fail (LoanNotOverdue)
+    // Set timestamp to exactly the due date — check_default should fail (LoanNotOverdue)
     t.env.ledger().set_timestamp(due_date);
 
-    let result = t.client.try_mark_defaulted(&loan_id);
+    let result = t.client.try_check_default(&loan_id);
     assert!(result.is_err(), "Should fail when timestamp == due_date");
 }
 
 #[test]
-fn test_mark_defaulted_one_second_past_due_succeeds() {
+fn test_check_default_one_second_past_due_succeeds() {
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
@@ -1367,7 +1394,7 @@ fn test_mark_defaulted_one_second_past_due_succeeds() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.env.ledger().set_timestamp(due_date + 1);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);
@@ -1410,7 +1437,7 @@ fn test_default_flow_uses_last_installment_for_overdue_check() {
 
     // Past first two but not the last — should still fail (LoanNotOverdue)
     t.env.ledger().set_timestamp(7000);
-    let result = t.client.try_mark_defaulted(&loan_id);
+    let result = t.client.try_check_default(&loan_id);
     assert!(
         result.is_err(),
         "Not overdue until past the last installment"
@@ -1418,7 +1445,7 @@ fn test_default_flow_uses_last_installment_for_overdue_check() {
 
     // Now past the last installment — should succeed
     t.env.ledger().set_timestamp(10001);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);
 }
@@ -1426,7 +1453,7 @@ fn test_default_flow_uses_last_installment_for_overdue_check() {
 // ─── loan creation — score decrease on default (reputation integration) ───────
 
 #[test]
-fn test_mark_defaulted_triggers_reputation_slash() {
+fn test_check_default_triggers_reputation_slash() {
     // MockReputation::slash is a no-op; we just verify the call doesn't panic,
     // proving the contract correctly invokes the reputation contract on default.
     let t = TestCtx::setup();
@@ -1443,7 +1470,7 @@ fn test_mark_defaulted_triggers_reputation_slash() {
 
     t.advance_past(5000);
     // This succeeds only if the `slash` cross-contract call is executed without error
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);
@@ -1466,7 +1493,7 @@ fn setup_parameters_with_grace_period(t: &TestCtx, grace_period_seconds: u64) {
 }
 
 #[test]
-fn test_mark_defaulted_blocked_during_grace_period() {
+fn test_check_default_blocked_during_grace_period() {
     // With a 1000-second grace period the loan cannot be hard-defaulted while
     // the clock is still inside due_date < t <= due_date + grace.
     let t = TestCtx::setup();
@@ -1486,10 +1513,10 @@ fn test_mark_defaulted_blocked_during_grace_period() {
 
     // One second past due but still within the grace window.
     t.env.ledger().set_timestamp(due_date + 1);
-    let result = t.client.try_mark_defaulted(&loan_id);
+    let result = t.client.try_check_default(&loan_id);
     assert!(
         result.is_err(),
-        "mark_defaulted must fail while inside the grace period"
+        "check_default must fail while inside the grace period"
     );
     // Verify the loan is still Active — not Defaulted.
     let loan = t.client.get_loan(&loan_id);
@@ -1497,7 +1524,7 @@ fn test_mark_defaulted_blocked_during_grace_period() {
 }
 
 #[test]
-fn test_mark_defaulted_succeeds_after_grace_period_expires() {
+fn test_check_default_succeeds_after_grace_period_expires() {
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
@@ -1516,14 +1543,14 @@ fn test_mark_defaulted_succeeds_after_grace_period_expires() {
 
     // One second past the end of the grace window.
     t.env.ledger().set_timestamp(due_date + grace + 1);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);
 }
 
 #[test]
-fn test_mark_defaulted_at_grace_period_boundary_still_blocked() {
+fn test_check_default_at_grace_period_boundary_still_blocked() {
     // At exactly due_date + grace_period the loan is still protected.
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
@@ -1542,10 +1569,10 @@ fn test_mark_defaulted_at_grace_period_boundary_still_blocked() {
             .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     t.env.ledger().set_timestamp(due_date + grace);
-    let result = t.client.try_mark_defaulted(&loan_id);
+    let result = t.client.try_check_default(&loan_id);
     assert!(
         result.is_err(),
-        "mark_defaulted must fail at exactly the grace period boundary"
+        "check_default must fail at exactly the grace period boundary"
     );
 }
 
@@ -1650,7 +1677,7 @@ fn test_zero_grace_period_allows_immediate_default() {
             .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     t.env.ledger().set_timestamp(due_date + 1);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);
@@ -1774,7 +1801,7 @@ fn test_repayment_on_non_active_loan_is_rejected() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     // Attempting to repay a Defaulted loan must fail with LoanNotActive
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
@@ -1914,7 +1941,7 @@ fn test_repayment_credited_to_liquidity_pool() {
 #[test]
 #[ignore = "liquidity pool integration not yet implemented — Phase 6"]
 fn test_guarantee_transferred_to_pool_on_default() {
-    // mark_defaulted must call receive_guarantee on the liquidity pool
+    // check_default must call receive_guarantee on the liquidity pool
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
@@ -1926,7 +1953,7 @@ fn test_guarantee_transferred_to_pool_on_default() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
     // TODO: Verify MockLiquidityPool::receive_guarantee(200) was called
     let _ = loan_id;
 }
@@ -1965,7 +1992,7 @@ fn test_complete_lifecycle_create_then_default() {
     assert_eq!(created.remaining_balance, DEFAULT_TOTAL_DUE);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     let defaulted = t.client.get_loan(&loan_id);
     assert_eq!(defaulted.status, LoanStatus::Defaulted);
@@ -2009,7 +2036,7 @@ fn test_multiple_independent_loans_do_not_interfere() {
 
     // Default loan_a only
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_a);
+    t.client.check_default(&loan_a);
 
     let la = t.client.get_loan(&loan_a);
     let lb = t.client.get_loan(&loan_b);
@@ -2081,7 +2108,7 @@ fn test_repayment_on_defaulted_loan_is_rejected() {
         .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
-    t.client.mark_defaulted(&loan_id);
+    t.client.check_default(&loan_id);
 
     // Loan is now Defaulted — repayment must fail
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
@@ -2391,8 +2418,7 @@ impl RealIntegrationCtx {
         let vendor_name = SorobanString::from_str(&self.env, name);
         self.vendor_registry
             .register_vendor(&self.admin, vendor, &vendor_name);
-        self.vendor_registry
-            .approve_vendor(&self.admin, vendor);
+        self.vendor_registry.approve_vendor(&self.admin, vendor);
     }
 
     fn single_installment(
@@ -2547,12 +2573,12 @@ fn test_end_to_end_default_path_guarantee_and_penalty() {
     let pool_balance_after_loan = t.balance(&t.pool.address);
 
     t.env.ledger().set_timestamp(5_001);
-    t.creditline.mark_defaulted(&loan_id);
+    t.creditline.check_default(&loan_id);
 
     let loan = t.creditline.get_loan(&loan_id);
     let pool_stats = t.pool.get_pool_stats();
     assert_eq!(loan.status, LoanStatus::Defaulted);
-    assert_eq!(t.reputation.get_score(&user), 60);
+    assert_eq!(t.reputation.get_score(&user), 50);
     assert_eq!(
         t.balance(&t.creditline_id),
         creditline_balance_after_loan - 200
@@ -3151,4 +3177,48 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::sub_i128(min, 1), Err(CreditLineError::Underflow));
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
+}
+
+#[test]
+fn test_can_default_returns_false_for_fresh_loan() {
+    let t = TestCtx::setup();
+    let user = soroban_sdk::Address::generate(&t.env);
+    let vendor = soroban_sdk::Address::generate(&t.env);
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 200);
+    t.register_vendor(&vendor, "Test Vendor");
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &200,
+        &schedule,
+        &crate::LoanType::Standard,
+    );
+
+    t.env.ledger().set_timestamp(2000);
+    assert!(!t.client.can_default(&loan_id));
+}
+
+#[test]
+fn test_can_default_returns_true_after_simulating_time_past_due_date() {
+    let t = TestCtx::setup();
+    let user = soroban_sdk::Address::generate(&t.env);
+    let vendor = soroban_sdk::Address::generate(&t.env);
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 200);
+    t.register_vendor(&vendor, "Test Vendor");
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &200,
+        &schedule,
+        &crate::LoanType::Standard,
+    );
+
+    t.advance_past(5000 + 259200); // Past due date + 3 days grace period
+    assert!(t.client.can_default(&loan_id));
 }

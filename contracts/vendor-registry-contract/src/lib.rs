@@ -227,7 +227,8 @@ impl VendorRegistryContract {
 
     /// Upgrade the contract WASM — admin only
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
 
         let old = storage::get_version(&env).unwrap_or(1u32);

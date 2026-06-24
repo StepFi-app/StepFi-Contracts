@@ -8,3 +8,10 @@ pub fn require_admin(env: &Env, caller: &Address) {
         panic_with_error!(env, ParametersError::NotAdmin);
     }
 }
+
+pub fn require_signer(env: &Env, caller: &Address) {
+    let config = storage::get_multisig(env).unwrap_or_else(|err| panic_with_error!(env, err));
+    if !config.signers.contains(caller) {
+        panic_with_error!(env, ParametersError::NotSigner);
+    }
+}

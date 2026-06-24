@@ -1,4 +1,4 @@
-use soroban_sdk::contracttype;
+use soroban_sdk::{contracttype, Address, BytesN, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,4 +38,38 @@ pub fn default_parameters() -> ProtocolParameters {
         base_interest_bps: DEFAULT_BASE_INTEREST_BPS,
         grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
     }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigConfig {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalAction {
+    UpdateParameters(ProtocolParameters),
+    SetAdmin(Address),
+    Upgrade(BytesN<32>),
+    UpdateSigners(MultisigConfig),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proposal {
+    pub id: u64,
+    pub action: ProposalAction,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Proposal(u64),
 }

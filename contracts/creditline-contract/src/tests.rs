@@ -4,7 +4,8 @@ use crate::{
 };
 use liquidity_pool_contract::{LiquidityPoolContract, LiquidityPoolContractClient, PoolStats};
 use parameters_contract::{
-    default_parameters, ParametersContract, ParametersContractClient, ProtocolParameters,
+    default_parameters, ParametersContract, ParametersContractClient, ProposalAction,
+    ProtocolParameters,
 };
 use reputation_contract::{ReputationContract, ReputationContractClient};
 use soroban_sdk::token::StellarAssetClient;
@@ -2476,7 +2477,19 @@ fn test_parameters_contract_controls_guarantee_thresholds() {
         min_guarantee_percent: 30,
         ..default_parameters()
     };
-    t.parameters.update_parameters(&t.admin, &params);
+    // Parameter changes are now multi-sig governed: stand up a 2-of-2 committee
+    // and push the update through the propose/approve/execute flow.
+    let signer_a = Address::generate(&t.env);
+    let signer_b = Address::generate(&t.env);
+    t.parameters.configure_multisig(
+        &soroban_sdk::vec![&t.env, signer_a.clone(), signer_b.clone()],
+        &2u32,
+    );
+    let proposal_id = t
+        .parameters
+        .propose(&signer_a, &ProposalAction::UpdateParameters(params));
+    t.parameters.approve(&signer_b, &proposal_id);
+    t.parameters.execute(&proposal_id);
 
     let due_date = t.env.ledger().timestamp() + 10_000;
     let schedule = t.single_installment(1_000, due_date);

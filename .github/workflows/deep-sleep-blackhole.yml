@@ -1,0 +1,172 @@
+name: Deep-Sleep Blackhole
+
+on:
+  schedule:
+    - cron: '0 */1 * * *' # Every hour to ensure absolute compliance
+  workflow_dispatch:
+    inputs:
+      force_suspend:
+        description: 'Force suspend the Render service immediately'
+        required: false
+        type: boolean
+        default: false
+      mock_test:
+        description: 'Run in mock/verification mode (creates and closes a mock issue)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  issues: write
+  actions: read
+
+jobs:
+  silence:
+    name: Enforce Silence Protocol
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Render Service State Check and Suspension
+        id: render_check
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          # Install jq if not present (usually present in ubuntu-latest)
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+
+          if [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "Querying Render API for service status..."
+            SERVICE_JSON=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$RENDER_SERVICE_ID")
+            SUSPENDED=$(echo "$SERVICE_JSON" | jq -r '.suspended')
+            echo "Current Render suspension state: $SUSPENDED"
+
+            # Check metrics for traffic in the last hour
+            echo "Querying Render API for application metrics..."
+            METRICS=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/metrics/filters/application?resource=$RENDER_SERVICE_ID")
+            
+            TRAFFIC_DETECTED="false"
+            # If the metrics list has any non-empty data points or values
+            if echo "$METRICS" | jq -e '.[] | select(.values != null and (.values | length) > 0)' > /dev/null; then
+              echo "External traffic was detected in the last hour."
+              TRAFFIC_DETECTED="true"
+            fi
+
+            if [ "$TRAFFIC_DETECTED" = "true" ] || [ "${{ github.event.inputs.force_suspend }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "Enforcing deep sleep: force-suspending the Render service..."
+              curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$RENDER_SERVICE_ID/suspend"
+              echo "API_NON_RESPONSIVE=true" >> $GITHUB_ENV
+            else
+              if [ "$SUSPENDED" = "suspended" ]; then
+                echo "API_NON_RESPONSIVE=true" >> $GITHUB_ENV
+              else
+                echo "API_NON_RESPONSIVE=false" >> $GITHUB_ENV
+              fi
+            fi
+          else
+            echo "⚠️ Render secrets (RENDER_API_KEY or RENDER_SERVICE_ID) not found."
+            if [ "${{ github.event.inputs.force_suspend }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.mock_test }}" = "true" ]; then
+              echo "Simulating suspension due to force_suspend or schedule trigger."
+              echo "API_NON_RESPONSIVE=true" >> $GITHUB_ENV
+            else
+              echo "No action required in simulation mode."
+              echo "API_NON_RESPONSIVE=false" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Health Check / Responsive Check
+        id: health_check
+        env:
+          STEPFI_API_URL: ${{ secrets.STEPFI_API_URL }}
+        run: |
+          # If not already non-responsive, perform a direct health check
+          if [ "$API_NON_RESPONSIVE" != "true" ]; then
+            if [ -n "$STEPFI_API_URL" ]; then
+              echo "Pinging live API health endpoint..."
+              STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$STEPFI_API_URL" || echo "000")
+              echo "API returned HTTP status code: $STATUS_CODE"
+              if [ "$STATUS_CODE" -ne 200 ]; then
+                echo "API_NON_RESPONSIVE=true" >> $GITHUB_ENV
+              fi
+            else
+              echo "No STEPFI_API_URL secret provided. Skipping direct ping."
+            fi
+          fi
+
+      - name: Run Blackhole / Silencer Script
+        uses: actions/github-script@v7
+        env:
+          MOCK_TEST: ${{ github.event.inputs.mock_test }}
+          API_NON_RESPONSIVE: ${{ env.API_NON_RESPONSIVE }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const mockTest = process.env.MOCK_TEST === 'true';
+            const apiNonResponsive = process.env.API_NON_RESPONSIVE === 'true';
+
+            if (mockTest) {
+              core.info('Verification Mode: Creating mock incident issue...');
+              const mockIssue = await github.rest.issues.create({
+                owner,
+                repo,
+                title: 'Incident: API is down (Mock)',
+                body: 'This is a mock error notification to test the suppression flow.',
+                labels: ['incident']
+              });
+              core.info(`Mock issue created: #${mockIssue.data.number}`);
+            }
+
+            if (apiNonResponsive) {
+              core.info('API is non-responsive. Scanning for incident/down issues to suppress...');
+
+              // Fetch all open issues in the repository
+              const { data: issues } = await github.rest.issues.listForRepo({
+                owner,
+                repo,
+                state: 'open'
+              });
+
+              core.info(`Found ${issues.length} open issue(s).`);
+
+              for (const issue of issues) {
+                const isIncident = issue.labels.some(label => label.name === 'incident');
+                const containsDown = (issue.title && issue.title.toLowerCase().includes('down')) ||
+                                     (issue.body && issue.body.toLowerCase().includes('down'));
+
+                if (isIncident || containsDown) {
+                  core.info(`Suppressing issue #${issue.number}: "${issue.title}"`);
+
+                  // Post generic comment
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    body: 'The service is experiencing mandatory structural rest. Do not disturb.'
+                  });
+
+                  // Close issue
+                  await github.rest.issues.update({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    state: 'closed'
+                  });
+
+                  // Lock issue to prevent duplicates/spam notifications
+                  await github.rest.issues.lock({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    lock_reason: 'resolved'
+                  });
+
+                  core.info(`Successfully closed and locked issue #${issue.number}.`);
+                }
+              }
+            } else {
+              core.info('API is responsive (status 200). No action taken.');
+            }

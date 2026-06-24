@@ -18,6 +18,9 @@ Deployer: `GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF`
 Deployed: 2026-05-11 (Creditline redeployed 2026-05-12)
 Full deployment details: [`contracts/deployed-testnet.json`](./contracts/deployed-testnet.json)
 
+> [!WARNING]
+> **Do Not Monitor or Ping the API Endpoint:** Do NOT configure automated uptime monitors, ping checks, or continuous polling against the live `StepFi-API` endpoint. To minimize free-tier resource utilization, StepFi employs an automated deep-sleep protocol that suspends the API instance when idle. Setting up pings keeps the service awake and causes unnecessary resource consumption. Any issues reporting outages or downtime will be automatically resolved, closed, and locked by the automated blackhole workflow.
+
 ---
 
 ## Architecture

@@ -4,6 +4,10 @@ use crate::types::ProtocolParameters;
 
 const PARAMS_UPDATED: Symbol = symbol_short!("PARMUPDT");
 const ADMIN_UPDATED: Symbol = symbol_short!("PARMADMN");
+const MS_CONFIGURED: Symbol = symbol_short!("MSCONFIG");
+const PROP_CREATED: Symbol = symbol_short!("PROPNEW");
+const PROP_APPROVED: Symbol = symbol_short!("PROPAPPR");
+const PROP_EXECUTED: Symbol = symbol_short!("PROPEXEC");
 
 pub fn emit_parameters_updated(env: &Env, admin: &Address, params: &ProtocolParameters) {
     env.events().publish(
@@ -30,4 +34,21 @@ pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
         (soroban_sdk::Symbol::new(env, "CONTRACTUPGRADED"),),
         (old_version, new_version, env.ledger().timestamp()),
     );
+}
+
+pub fn emit_multisig_configured(env: &Env, threshold: u32, num_signers: u32) {
+    env.events()
+        .publish((MS_CONFIGURED,), (threshold, num_signers));
+}
+
+pub fn emit_proposal_created(env: &Env, id: u64, proposer: &Address) {
+    env.events().publish((PROP_CREATED, proposer), id);
+}
+
+pub fn emit_proposal_approved(env: &Env, id: u64, signer: &Address, approvals: u32) {
+    env.events().publish((PROP_APPROVED, signer), (id, approvals));
+}
+
+pub fn emit_proposal_executed(env: &Env, id: u64) {
+    env.events().publish((PROP_EXECUTED,), id);
 }

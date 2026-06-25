@@ -1,43 +1,41 @@
 {
   "network": "testnet",
-  "deployer": "GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF",
-  "deployedAt": "2026-05-11",
+  "deployer": "GDL63O24NKGJLMYATWX7NDZSQZ2FIGJEFDGDHXX72FJOWXLYPZBJQ4LH",
+  "deployedAt": "2026-06-23",
   "token": {
     "asset": "native",
     "sac": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
   },
   "contracts": {
     "parameters": {
-      "id": "CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B",
+      "id": "CCC4PHTG6QYSOIE5Z2UAWXYC54YK4CVJFG47YH5GIMHD7FUB5QODABCB",
       "initialized": true,
-      "initializedAt": "2026-05-11",
+      "initializedAt": "2026-06-23",
       "initMethod": "initialize_defaults(admin)"
     },
     "reputation": {
-      "id": "CC3BO57ZRJGA63QJBIBSOMI25Z3X2I5CYTARYRAUXUAILX6L3OWBL5SB",
+      "id": "CAC7P36ULDLJMZ2RFEGOHGFFMU6NF5MRP5SQTWDFD2K7EIE2TBHHCQQT",
       "initialized": true,
-      "initializedAt": "2026-05-11",
+      "initializedAt": "2026-06-23",
       "initMethod": "set_admin(new_admin)"
     },
     "vendorRegistry": {
-      "id": "CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L",
+      "id": "CAFCOBKMXYTNI2AT264QRWZNU7QL3DBL76JCQ5HQEP43QMY3YGKBCOJN",
       "initialized": true,
-      "initializedAt": "2026-05-11",
+      "initializedAt": "2026-06-23",
       "initMethod": "initialize(admin)"
     },
     "liquidityPool": {
-      "id": "CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT",
+      "id": "CD6ZBJLU2REDN5VS6LJHY2TGZHTJHD7KSQEGSAOPYHW6UKHLM4BQZHIJ",
       "initialized": true,
-      "initializedAt": "2026-05-11",
+      "initializedAt": "2026-06-23",
       "initMethod": "initialize(token, treasury, admin, merchant_fund)"
     },
     "creditline": {
-      "id": "CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X",
+      "id": "CDFACCFOC7NVBRN5S476473YZXYC6MTECISBM6J2YIM74IOZ4K74TYJP",
       "initialized": true,
-      "initializedAt": "2026-05-12",
-      "initMethod": "initialize(vendor_registry, liquidity_pool, reputation_contract, token, admin)",
-      "previousId": "CCWFD2J2NQS56HFNPG2S4HUR2LBA3O7NDQCB35C5JD7EBQUZ63G3LBCP",
-      "wasmHash": "392ad2562e8836a2836695bb4ed32973bde100b243b5f695ddf2698464541c9e"
+      "initializedAt": "2026-06-23",
+      "initMethod": "initialize(vendor_registry, liquidity_pool, reputation_contract, token, admin)"
     }
   }
 }

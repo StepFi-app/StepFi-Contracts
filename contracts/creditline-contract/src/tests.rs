@@ -10,10 +10,10 @@ use parameters_contract::{
 use reputation_contract::{ReputationContract, ReputationContractClient};
 use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contractimpl, symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::Client as TokenClient,
-    Address, Env, String as SorobanString,
+    Address, Env, String as SorobanString, Symbol,
 };
 use vendor_registry_contract::VendorRegistryContract;
 
@@ -31,14 +31,28 @@ pub struct MockReputation;
 
 #[contractimpl]
 impl MockReputation {
-    pub fn get_score(_env: Env, _user: Address) -> u32 {
-        100 // Returns 100 to pass the threshold check
-    }
-    pub fn decrease_score(_env: Env, _updater: Address, _user: Address, _amount: u32) {
-        // Does nothing, just needs to exist for the call to succeed
+    pub fn get_score(env: Env, user: Address) -> u32 {
+        env.storage()
+            .instance()
+            .get(&(Symbol::new(&env, "score"), user))
+            .unwrap_or(100)
     }
 
-    pub fn increase_score(_env: Env, _updater: Address, _user: Address, _amount: u32) {}
+    pub fn decrease_score(env: Env, _updater: Address, user: Address, amount: u32) {
+        let score = Self::get_score(env.clone(), user.clone());
+        let next = score.saturating_sub(amount);
+        env.storage()
+            .instance()
+            .set(&(Symbol::new(&env, "score"), user), &next);
+    }
+
+    pub fn increase_score(env: Env, _updater: Address, user: Address, amount: u32) {
+        let score = Self::get_score(env.clone(), user.clone());
+        let next = score.checked_add(amount).unwrap_or(100);
+        env.storage()
+            .instance()
+            .set(&(Symbol::new(&env, "score"), user), &next);
+    }
 }
 
 #[contract]
@@ -56,12 +70,67 @@ impl MockLiquidityPool {
         }
     }
 
-    pub fn fund_loan(_env: Env, _creditline: Address, _vendor: Address, _amount: i128) {}
+    pub fn fund_loan(env: Env, _creditline: Address, _vendor: Address, amount: i128) {
+        env.storage().instance().set(&symbol_short!("FUND"), &true);
+        env.storage().instance().set(&symbol_short!("FNAMT"), &amount);
+    }
 
-    pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
+    pub fn receive_repayment(env: Env, _from: Address, amount: i128, fee: i128) {
+        env.storage().instance().set(&symbol_short!("REPRD"), &true);
+        env.storage().instance().set(&symbol_short!("RPAMT"), &amount);
+        env.storage().instance().set(&symbol_short!("RPFEE"), &fee);
+    }
 
-    pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
+        env.storage().instance().set(&symbol_short!("GUARD"), &true);
+        env.storage().instance().set(&symbol_short!("GUAMT"), &amount);
+    }
+
+    pub fn was_fund_loan_called(env: Env) -> bool {
+        env.storage().instance().get(&symbol_short!("FUND")).unwrap_or(false)
+    }
+
+    pub fn was_receive_repayment_called(env: Env) -> bool {
+        env.storage().instance().get(&symbol_short!("REPRD")).unwrap_or(false)
+    }
+
+    pub fn was_receive_guarantee_called(env: Env) -> bool {
+        env.storage().instance().get(&symbol_short!("GUARD")).unwrap_or(false)
+    }
+
+    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
+        env.storage().instance().get(&symbol_short!("GUAMT")).unwrap_or(0)
+    }
 }
+
+// Placed in its own module to avoid symbol collisions with MockLiquidityPool.
+mod mock_empty_pool {
+    use liquidity_pool_contract::PoolStats;
+    use soroban_sdk::{contract, contractimpl, Address, Env};
+
+    #[contract]
+    pub struct MockLiquidityPoolEmpty;
+
+    #[contractimpl]
+    impl MockLiquidityPoolEmpty {
+        pub fn get_pool_stats(_env: Env) -> PoolStats {
+            PoolStats {
+                total_liquidity: 0,
+                locked_liquidity: 0,
+                available_liquidity: 0,
+                total_shares: 0,
+                share_price: 10_000,
+            }
+        }
+
+        pub fn fund_loan(_env: Env, _creditline: Address, _vendor: Address, _amount: i128) {}
+
+        pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
+
+        pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+    }
+}
+use mock_empty_pool::MockLiquidityPoolEmpty;
 
 // A mock reputation contract that always returns a score below the threshold.
 // Placed in its own module to avoid symbol collisions with MockReputation.
@@ -88,9 +157,9 @@ struct TestCtx {
     env: Env,
     client: CreditLineContractClient<'static>,
     admin: Address,
-    _rep_id: Address,
+    rep_id: Address,
     token_id: Address,
-    _lp_id: Address,
+    lp_id: Address,
     vendor_registry_id: Address,
 }
 
@@ -131,9 +200,9 @@ impl TestCtx {
             env,
             client,
             admin,
-            _rep_id: rep_id,
+            rep_id,
             token_id,
-            _lp_id: lp_id,
+            lp_id,
             vendor_registry_id,
         }
     }
@@ -226,6 +295,26 @@ impl TestCtx {
     fn balance(&self, address: &Address) -> i128 {
         let token_client = soroban_sdk::token::Client::new(&self.env, &self.token_id);
         token_client.balance(address)
+    }
+
+    fn was_fund_loan_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_fund_loan_called()
+    }
+
+    fn was_receive_repayment_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_receive_repayment_called()
+    }
+
+    fn was_receive_guarantee_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_receive_guarantee_called()
+    }
+
+    fn get_receive_guarantee_amount(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_guarantee_amount()
+    }
+
+    fn reputation_score(&self, user: &Address) -> u32 {
+        MockReputationClient::new(&self.env, &self.rep_id).get_score(user)
     }
 }
 
@@ -1888,38 +1977,47 @@ fn test_unregistered_vendor_loan_is_rejected() {
 // ─── liquidity pool integration — TDD stubs (Phase 6) ────────────────────────
 
 #[test]
-#[ignore = "liquidity pool integration not yet implemented — Phase 6"]
 fn test_loan_funding_debits_liquidity_pool() {
-    // create_loan must call fund_loan on the liquidity pool contract
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
-    // TODO: wire up a MockLiquidityPool; after create_loan verify fund_loan was called
-    let _ = t.create_default_loan(&user, &vendor);
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(&user, DEFAULT_GUARANTEE);
+
+    let due_date = t.env.ledger().timestamp() + 10_000;
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
+    let _ = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    assert!(t.was_fund_loan_called());
 }
 
 #[test]
-#[ignore = "liquidity pool integration not yet implemented — Phase 6"]
 fn test_repayment_credited_to_liquidity_pool() {
-    // repay() must forward funds to the liquidity pool via receive_repayment
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
     let loan_id = t.create_default_loan(&user, &vendor);
     t.mint(&user, DEFAULT_TOTAL_DUE);
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
-    // Verify MockLiquidityPool::receive_repayment was called
-    let _ = loan_id;
+
+    assert!(t.was_receive_repayment_called());
 }
 
 #[test]
-#[ignore = "liquidity pool integration not yet implemented — Phase 6"]
 fn test_guarantee_transferred_to_pool_on_default() {
-    // mark_defaulted must call receive_guarantee on the liquidity pool
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
 
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(&user, 200);
     t.env.ledger().set_timestamp(1000);
     let schedule = t.single_installment(1000, 5000);
     let loan_id = t
@@ -1928,20 +2026,73 @@ fn test_guarantee_transferred_to_pool_on_default() {
 
     t.advance_past(5000);
     t.client.mark_defaulted(&loan_id);
-    // TODO: Verify MockLiquidityPool::receive_guarantee(200) was called
-    let _ = loan_id;
+
+    assert!(t.was_receive_guarantee_called());
+    assert_eq!(t.get_receive_guarantee_amount(), 200);
 }
 
 #[test]
-#[ignore = "liquidity pool integration not yet implemented — Phase 6"]
 #[should_panic(expected = "Error(Contract, #5)")] // InsufficientLiquidity
 fn test_insufficient_liquidity_rejects_loan_creation() {
-    // When pool does not have enough available liquidity, create_loan must fail
-    let t = TestCtx::setup();
-    let user = Address::generate(&t.env);
-    let vendor = Address::generate(&t.env);
-    // TODO: wire up a MockLiquidityPool that returns available=0
-    let _ = t.create_default_loan(&user, &vendor);
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let rep_id = env.register(MockReputation, ());
+    let vendor_registry_id = env.register(VendorRegistryContract, ());
+    use soroban_sdk::IntoVal;
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "initialize"),
+        (&admin,).into_val(&env),
+    );
+    let lp_id = env.register(MockLiquidityPoolEmpty, ());
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+
+    let user = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "register_vendor"),
+        (&admin, vendor.clone(), SorobanString::from_str(&env, "Test Vendor")).into_val(&env),
+    );
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, vendor.clone()).into_val(&env),
+    );
+
+    let asset_client = StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&user, &200);
+
+    let schedule = {
+        let mut s = soroban_sdk::Vec::new(&env);
+        s.push_back(RepaymentInstallment {
+            amount: DEFAULT_TOTAL_DUE,
+            due_date: env.ledger().timestamp() + 10_000,
+            paid: false,
+            paid_at: 0,
+        });
+        s
+    };
+
+    let _ = client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 }
 
 // ─── complete loan lifecycle ──────────────────────────────────────────────────
@@ -2043,25 +2194,28 @@ fn test_complete_lifecycle_create_repay_complete() {
 
 #[test]
 fn test_multi_contract_integration_full_flow() {
-    // End-to-end: reputation check on create → funding → repayment → score boost
     let t = TestCtx::setup();
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
 
-    // 1. Create loan — reputation validated, pool funded
     let loan_id = t.create_default_loan(&user, &vendor);
+
+    // Fund_loan should have been called during creation
+    assert!(t.was_fund_loan_called());
 
     t.mint(&user, DEFAULT_TOTAL_DUE);
 
-    // 2. Repay in full — pool credited, reputation score increased
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Paid);
 
-    // TODO: assert reputation score increased for `user`
-    // TODO: assert liquidity pool received the repayment
-    let _ = loan_id;
+    // Reputation score should have increased (on-time payment → +15, capped at 100)
+    let score = t.reputation_score(&user);
+    assert!(score >= 100);
+
+    // Liquidity pool should have received the repayment
+    assert!(t.was_receive_repayment_called());
 }
 
 // ─── repayment — repay_loan implementation tests ─────────────────────────────

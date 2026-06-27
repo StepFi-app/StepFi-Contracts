@@ -28,6 +28,7 @@ pub fn mul_u64(a: u64, b: u64) -> Result<u64, CreditLineError> {
     a.checked_mul(b).ok_or(CreditLineError::Overflow)
 }
 
+#[allow(dead_code)]
 pub fn div_u64(a: u64, b: u64) -> Result<u64, CreditLineError> {
     a.checked_div(b).ok_or(CreditLineError::Overflow)
 }

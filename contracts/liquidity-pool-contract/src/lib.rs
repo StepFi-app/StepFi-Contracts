@@ -437,6 +437,12 @@ impl LiquidityPoolContract {
     // Queries
     // -------------------------------------------------------------------------
 
+    /// Return the current share price in basis points (10000 = 1.0).
+    pub fn get_share_price(env: Env) -> i128 {
+        Self::calculate_share_price_internal(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+    }
+
     pub fn get_pool_stats(env: Env) -> PoolStats {
         let total_liquidity =
             storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
@@ -445,17 +451,8 @@ impl LiquidityPoolContract {
         let available_liquidity = total_liquidity.saturating_sub(locked_liquidity);
         let total_shares =
             storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
-
-        // Share price in basis points: (total_liquidity × 10000) / total_shares
-        let share_price = if total_shares == 0 {
-            types::TOTAL_BPS // Default: 1.00 expressed as 10000 bps
-        } else {
-            safe_math::div_i128(
-                safe_math::mul_i128(total_liquidity, types::TOTAL_BPS).unwrap_or(0),
-                total_shares,
-            )
-            .unwrap_or(types::TOTAL_BPS)
-        };
+        let share_price = Self::calculate_share_price_internal(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
         PoolStats {
             total_liquidity,
@@ -489,6 +486,18 @@ impl LiquidityPoolContract {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    fn calculate_share_price_internal(env: &Env) -> Result<i128, LiquidityPoolError> {
+        let total_shares = storage::get_total_shares(env)?;
+        let total_liquidity = storage::get_total_liquidity(env)?;
+        if total_shares == 0 || total_liquidity == 0 {
+            return Ok(types::SHARE_PRICE_PRECISION);
+        }
+        safe_math::div_i128(
+            safe_math::mul_i128(total_liquidity, types::SHARE_PRICE_PRECISION)?,
+            total_shares,
+        )
+    }
 
     fn require_admin(env: &Env, caller: &Address) {
         let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));

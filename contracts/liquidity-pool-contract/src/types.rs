@@ -18,5 +18,8 @@ pub const PROTOCOL_FEE_BPS: i128 = 1000; // 10% to protocol treasury
 pub const MERCHANT_FEE_BPS: i128 = 500; // 5% to merchant incentive fund
 pub const TOTAL_BPS: i128 = 10000;
 
+/// Precision used for share price calculation (10000 = 1.0)
+pub const SHARE_PRICE_PRECISION: i128 = 10_000;
+
 /// Minimum deposit / withdrawal to prevent rounding exploits
 pub const MIN_AMOUNT: i128 = 1;

@@ -23,7 +23,8 @@ cargo build --target wasm32-unknown-unknown --release \
   -p liquidity-pool-contract \
   -p vendor-registry-contract \
   -p parameters-contract \
-  -p reputation-contract 2>&1 | tail -3
+  -p reputation-contract \
+  -p vouching-contract 2>&1 | tail -3
 
 echo "Step 2 — Building creditline-contract..."
 cargo build --target wasm32-unknown-unknown --release -p creditline-contract 2>&1 | tail -3
@@ -34,7 +35,7 @@ WASM_DIR="target/wasm32-unknown-unknown/release"
 
 # Optimize WASMs (required: strips reference-types that Soroban runtime rejects)
 echo "Step 3 — Optimizing WASMs..."
-for c in parameters_contract reputation_contract vendor_registry_contract liquidity_pool_contract creditline_contract; do
+for c in parameters_contract reputation_contract vendor_registry_contract liquidity_pool_contract creditline_contract vouching_contract; do
   stellar contract optimize --wasm "$WASM_DIR/${c}.wasm" 2>&1 | tail -1
 done
 echo ""
@@ -76,6 +77,13 @@ CREDITLINE_ID=$(stellar contract deploy \
   --source $SOURCE \
   --network $NETWORK 2>&1 | tail -1)
 echo "  CREDIT_LINE_CONTRACT_ID=$CREDITLINE_ID"
+
+echo "Deploying vouching-contract..."
+VOUCHING_ID=$(stellar contract deploy \
+  --wasm $WASM_DIR/vouching_contract.optimized.wasm \
+  --source $SOURCE \
+  --network $NETWORK 2>&1 | tail -1)
+echo "  VOUCHING_CONTRACT_ID=$VOUCHING_ID"
 
 # Step 5 — Initialize each contract
 echo ""
@@ -123,6 +131,13 @@ stellar contract invoke --id $CREDITLINE_ID --source $SOURCE --network $NETWORK 
   --token $TOKEN_ID \
   --admin $ADMIN_PUBKEY 2>&1 | tail -1
 
+echo "Initializing vouching..."
+stellar contract invoke --id $VOUCHING_ID --source $SOURCE --network $NETWORK \
+  -- initialize \
+  --admin $ADMIN_PUBKEY \
+  --reputation_contract $REPUTATION_ID \
+  --vouch_boost 5 2>&1 | tail -1
+
 echo ""
 echo "Step 6 — Writing .env.contracts and deployed-testnet.json..."
 
@@ -132,6 +147,7 @@ REPUTATION_CONTRACT_ID=$REPUTATION_ID
 VENDOR_REGISTRY_CONTRACT_ID=$VENDOR_REGISTRY_ID
 LIQUIDITY_POOL_CONTRACT_ID=$LIQUIDITY_POOL_ID
 CREDIT_LINE_CONTRACT_ID=$CREDITLINE_ID
+VOUCHING_CONTRACT_ID=$VOUCHING_ID
 ENVEOF
 
 DEPLOYER_PUBKEY=$(stellar keys address $SOURCE 2>/dev/null)
@@ -175,6 +191,12 @@ cat > contracts/deployed-testnet.json << JSONEOF
       "initialized": true,
       "initializedAt": "$TODAY",
       "initMethod": "initialize(vendor_registry, liquidity_pool, reputation_contract, token, admin)"
+    },
+    "vouching": {
+      "id": "$VOUCHING_ID",
+      "initialized": true,
+      "initializedAt": "$TODAY",
+      "initMethod": "initialize(admin, reputation_contract, vouch_boost)"
     }
   }
 }

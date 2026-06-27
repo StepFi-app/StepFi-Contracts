@@ -547,6 +547,7 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
     assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
 }
 
+#[allow(dead_code)]
 fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {
     use soroban_sdk::IntoVal;
 

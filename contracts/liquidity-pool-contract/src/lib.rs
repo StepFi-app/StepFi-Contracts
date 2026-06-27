@@ -355,6 +355,24 @@ impl LiquidityPoolContract {
         res
     }
 
+    /// Accrue interest into the pool, increasing share price for all holders.
+    ///
+    /// This is a public alias for `distribute_interest` that makes the yield
+    /// mechanism explicit: calling this raises `total_liquidity` (by the LP
+    /// portion after fee split), which increases the share price for every
+    /// LP pro-rata.
+    ///
+    /// Fee split (same as `distribute_interest`):
+    ///   - 85 % → Liquidity Providers (share price increase)
+    ///   - 10 % → Protocol Treasury
+    ///   -  5 % → Merchant Incentive Fund
+    pub fn accumulate_interest(env: Env, interest_amount: i128) -> Result<(), LiquidityPoolError> {
+        Self::enter_non_reentrant(&env);
+        let res = Self::distribute_interest_internal(&env, interest_amount);
+        Self::exit_non_reentrant(&env);
+        res
+    }
+
     fn distribute_interest_internal(
         env: &Env,
         interest_amount: i128,

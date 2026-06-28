@@ -575,6 +575,16 @@ impl CreditLineContract {
             panic_with_error!(&env, CreditLineError::InvalidLoanStatus);
         }
 
+        if loan.repayment_schedule.is_empty() {
+            panic_with_error!(&env, CreditLineError::InvalidDueDate);
+        }
+        let now = env.ledger().timestamp();
+        for installment in loan.repayment_schedule.iter() {
+            if installment.due_date == 0 || installment.due_date <= now {
+                panic_with_error!(&env, CreditLineError::InvalidDueDate);
+            }
+        }
+
         // 4. Transition to Active
         loan.status = LoanStatus::Active;
 

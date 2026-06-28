@@ -42,6 +42,12 @@ pub struct RepaymentInstallment {
     pub paid_at: u64,  // Unix timestamp of payment (0 = unpaid)
 }
 
+impl RepaymentInstallment {
+    pub fn is_on_time(&self) -> bool {
+        self.paid && self.paid_at <= self.due_date
+    }
+}
+
 // Loan data structure
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

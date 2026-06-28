@@ -3188,6 +3188,144 @@ fn test_approve_loan_not_admin() {
     );
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #27)")] // InvalidDueDate
+fn test_approve_loan_rejects_zero_due_date() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(&user, DEFAULT_GUARANTEE);
+
+    // Request a loan whose installment has no due date set (0).
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, 0);
+    let loan_id = t.client.request_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Approval must reject the missing due date.
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #27)")] // InvalidDueDate
+fn test_approve_loan_rejects_past_due_date() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Move the clock past the due date so it is no longer in the future at approval.
+    t.env.ledger().set_timestamp(due_date + 1);
+    t.client.approve_loan(&loan_id);
+}
+
+// ─── is_on_time helper tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_installment_is_on_time() {
+    // Paid before the due date → on time.
+    let early = RepaymentInstallment {
+        amount: 100,
+        due_date: 1000,
+        paid: true,
+        paid_at: 900,
+    };
+    assert!(early.is_on_time());
+
+    // Paid exactly at the due date → still on time.
+    let exact = RepaymentInstallment {
+        amount: 100,
+        due_date: 1000,
+        paid: true,
+        paid_at: 1000,
+    };
+    assert!(exact.is_on_time());
+
+    // Paid one second after the due date → late.
+    let late = RepaymentInstallment {
+        amount: 100,
+        due_date: 1000,
+        paid: true,
+        paid_at: 1001,
+    };
+    assert!(!late.is_on_time());
+
+    // Unpaid installment is never on time, regardless of timestamps.
+    let unpaid = RepaymentInstallment {
+        amount: 100,
+        due_date: 1000,
+        paid: false,
+        paid_at: 0,
+    };
+    assert!(!unpaid.is_on_time());
+}
+
+#[test]
+fn test_repay_installment_on_time_reflected_by_is_on_time() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment);
+
+    // Pay well before the first installment's due date (10_000).
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let installment = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap();
+    assert!(installment.is_on_time());
+}
+
+#[test]
+fn test_repay_installment_late_reflected_by_is_on_time() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Pay after the first installment's due date.
+    t.env.ledger().set_timestamp(due_date + 1);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let installment = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap();
+    assert!(!installment.is_on_time());
+}
+
 // ─── repay_installment tests ──────────────────────────────────────────────────
 
 /// Helper: creates a loan with `n_installments` equal-valued installments

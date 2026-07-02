@@ -143,6 +143,13 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 
 ---
 
+## Contributors
+
+<!-- LEADERBOARD_START -->
+<!-- LEADERBOARD_END -->
+
+---
+
 ## License
 
 MIT — see [LICENSE](./LICENSE)

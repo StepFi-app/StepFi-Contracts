@@ -1,0 +1,16 @@
+# All files require review from the maintainer
+* @EmeditWeb
+
+# Contracts directory specifically
+contracts/ @EmeditWeb
+
+# Scripts
+scripts/ @EmeditWeb
+
+# Block web files completely
+# (these should never appear in this repo)
+*.tsx @EmeditWeb
+*.jsx @EmeditWeb
+*.html @EmeditWeb
+vite.config.* @EmeditWeb
+package.json @EmeditWeb

@@ -483,14 +483,10 @@ impl LiquidityPoolContract {
 
     /// Calculate how many tokens `shares` are worth at the current share price.
     pub fn calculate_withdrawal(env: Env, shares: i128) -> i128 {
+        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         if shares == 0 {
             return 0;
         }
-        let total_shares = storage::get_total_shares(&env).unwrap_or(0);
-        if total_shares == 0 {
-            return 0;
-        }
-        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         safe_math::div_i128(
             safe_math::mul_i128(shares, share_price).unwrap_or(0),
             types::SHARE_PRICE_PRECISION,

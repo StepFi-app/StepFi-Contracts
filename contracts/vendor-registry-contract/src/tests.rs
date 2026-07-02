@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, IntoVal, String,
+    Address, Env, IntoVal, String, Val, Vec,
 };
 
 /// Helper function to set up the environment, contract, and test addresses.
@@ -440,7 +440,7 @@ fn test_upgrade_rejected_for_non_admin() {
 #[test]
 fn test_admin_upgrade_increments_version_and_emits_event() {
     let env = Env::default();
-    let (client, _admin, _vendor) = setup(&env);
+    let (client, admin, _vendor) = setup(&env);
     env.mock_all_auths();
 
     assert_eq!(client.get_version(), 1u32);

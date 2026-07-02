@@ -24,8 +24,3 @@ Thumbs.db
 # Environment files
 .env
 .env.local
-
-# Node.js
-node_modules/
-dist/
-*.tsbuildinfo

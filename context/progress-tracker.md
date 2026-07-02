@@ -98,13 +98,6 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Recently Fixed
 
-### Bug Fixes (2026-06-27)
-- Fixed `calculate_withdrawal` in `liquidity-pool-contract` to return 0 when `total_shares == 0` (empty pool)
-- Added `get_loan_counter` public function to `creditline-contract` for frontend loan enumeration
-- Fixed frontend `soroban.ts` to call `get_loan_counter` instead of non-existent `all_loans_count`
-- Added `vouching-contract` to `deploy-testnet.sh` (build, deploy, initialize, env output, JSON manifest)
-- Suppressed unused-function warnings (`#[allow(dead_code)]`) on `div_u64`, `add_u32`, `sub_u32`
-
 ### Issue #7 — Follow-up: Missing `approve_vendor` in `RealIntegrationCtx::register_vendor`
 - Discovered second `register_vendor` helper in `RealIntegrationCtx` (integration test struct, ~line 2390) that only called `register_vendor` without `approve_vendor`
 - All integration tests using `RealIntegrationCtx` created loans with `Pending` vendors → `validate_vendor` → `is_active` returned `false` → `VendorNotActive` (#3)
@@ -116,9 +109,8 @@ Update this file after every completed contract change, fix, or architectural de
 
 1. **Learner grace period** — Make `grace_period_seconds` per-loan (not just global via parameters)
 2. **Reputation rules** — Update `creditline-contract` to call different reputation adjustments for `LoanType::LearnerInstallment`
-3. **Testnet deployment** — Deploy all contracts (including vouching), capture IDs, add to StepFi-API `.env`
+3. **Testnet deployment** — Deploy all contracts, capture IDs, add to StepFi-API `.env`
 4. **End-to-end validation** — Verify loan lifecycle on testnet via Stellar CLI
-5. **Frontend pages** — Build borrower dashboard, loan application, and mentor vouching pages
 
 ---
 

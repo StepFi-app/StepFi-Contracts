@@ -40,10 +40,6 @@ impl CreditLineContract {
         storage::get_version(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
-    pub fn get_loan_counter(env: Env) -> u64 {
-        storage::get_loan_counter(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
-    }
-
     pub fn initialize(
         env: Env,
         admin: Address,

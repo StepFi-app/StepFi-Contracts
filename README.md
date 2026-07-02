@@ -146,7 +146,7 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 ## Contributors
 
 <!-- LEADERBOARD_START -->
-## 🏆 Top 3 Contributors
+## 🏆 Top 5 Contributors
 
 <div align="center">
 
@@ -155,7 +155,7 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 
 <td align="center">
   <a href="https://github.com/EmeditWeb">
-    <img src="https://avatars.githubusercontent.com/u/77761768?v=4" width="100px;" style="border-radius:50%;" alt="EmeditWeb"/><br />
+    <img src="https://avatars.githubusercontent.com/u/77761768?v=4" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="EmeditWeb"/><br />
     <sub><b>🥇 @EmeditWeb</b></sub><br />
     <sub>24 contributions</sub>
   </a>
@@ -163,7 +163,7 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 
 <td align="center">
   <a href="https://github.com/Dopezapha">
-    <img src="https://avatars.githubusercontent.com/u/141345379?v=4" width="100px;" style="border-radius:50%;" alt="Dopezapha"/><br />
+    <img src="https://avatars.githubusercontent.com/u/141345379?v=4" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="Dopezapha"/><br />
     <sub><b>🥈 @Dopezapha</b></sub><br />
     <sub>3 contributions</sub>
   </a>
@@ -171,8 +171,24 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 
 <td align="center">
   <a href="https://github.com/KingFRANKHOOD">
-    <img src="https://avatars.githubusercontent.com/u/168771603?v=4" width="100px;" style="border-radius:50%;" alt="KingFRANKHOOD"/><br />
+    <img src="https://avatars.githubusercontent.com/u/168771603?v=4" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="KingFRANKHOOD"/><br />
     <sub><b>🥉 @KingFRANKHOOD</b></sub><br />
+    <sub>2 contributions</sub>
+  </a>
+</td>
+
+<td align="center">
+  <a href="https://github.com/deslawson">
+    <img src="https://avatars.githubusercontent.com/u/287468496?v=4" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="deslawson"/><br />
+    <sub><b>4 @deslawson</b></sub><br />
+    <sub>2 contributions</sub>
+  </a>
+</td>
+
+<td align="center">
+  <a href="https://github.com/Oluwatos94">
+    <img src="https://avatars.githubusercontent.com/u/111003311?v=4" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="Oluwatos94"/><br />
+    <sub><b>5 @Oluwatos94</b></sub><br />
     <sub>2 contributions</sub>
   </a>
 </td>

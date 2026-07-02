@@ -31,14 +31,14 @@ jobs:
           ls -la
 
           echo "📁 FIND SCRIPT:"
-          find . -name "generate-leaderboard.js"
+          find . -name "generate-leaderboard.cjs"
 
     
       - name: Run script (auto-detect path)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          FILE=$(find . -name "generate-leaderboard.js" | head -n 1)
+          FILE=$(find . -name "generate-leaderboard.cjs" | head -n 1)
 
           echo "📄 Found script at: $FILE"
 

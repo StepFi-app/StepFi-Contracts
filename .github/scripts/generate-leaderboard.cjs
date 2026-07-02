@@ -20,18 +20,18 @@ function generateMarkdown(contributors) {
     (c) => !excludedUsers.includes(c.login)
   );
 
-  const top = filtered.slice(0, 3);
+  const top = filtered.slice(0, 5);
 
-  let md = `## 🏆 Top 3 Contributors\n\n`;
+  let md = `## 🏆 Top 5 Contributors\n\n`;
   md += `<div align="center">\n\n<table>\n<tr>\n`;
 
   top.forEach((c, index) => {
-    const medals = ["🥇", "🥈", "🥉"];
+    const medals = ["🥇", "🥈", "🥉", "4", "5"];
 
     md += `
 <td align="center">
   <a href="${c.html_url}">
-    <img src="${c.avatar_url}" width="100px;" style="border-radius:50%;" alt="${c.login}"/><br />
+    <img src="${c.avatar_url}" width="100" height="100" style="object-fit:cover;border-radius:50%;" alt="${c.login}"/><br />
     <sub><b>${medals[index]} @${c.login}</b></sub><br />
     <sub>${c.contributions} contributions</sub>
   </a>

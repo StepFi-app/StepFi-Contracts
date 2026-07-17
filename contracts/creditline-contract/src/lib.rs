@@ -1030,6 +1030,14 @@ impl CreditLineContract {
     /// Priority order: late fees → interest → service fee → principal.
     /// Each `*_outstanding` bucket and `remaining_balance` are decremented
     /// accordingly.  Returns the per-bucket allocation.
+    ///
+    /// A borrower may pay exactly the fee components (late fees + interest +
+    /// service fee) and leave principal untouched.  This is by design — there is
+    /// no code-level minimum-principal check.  The safety net is the fixed loan
+    /// maturity combined with the permissionless [`mark_defaulted`] entry-point,
+    /// which becomes eligible once `now > last_installment_due_date +
+    /// grace_period_seconds`, regardless of how many fee-only payments were made
+    /// in the interim.
     fn apply_waterfall(
         loan: &mut Loan,
         amount: i128,

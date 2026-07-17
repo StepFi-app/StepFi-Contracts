@@ -2937,9 +2937,15 @@ fn test_repay_loan_auto_accrues_late_fees() {
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
 
     let loan = t.client.get_loan(&loan_id);
-    // Loan is still Active: original balance paid but late fees remain
+    // Loan is still Active: original balance paid but principal remains
+    // With the new waterfall (late fees first), payment of 1050 first pays
+    // 5 in late fees, then 40 interest, 10 service fee, and 995 principal.
+    // Remaining: 5 principal outstanding.
     assert_eq!(loan.status, LoanStatus::Active);
-    assert_eq!(loan.late_fees_outstanding, 5);
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, 5);
     assert_eq!(loan.remaining_balance, 5);
 }
 
@@ -3438,6 +3444,211 @@ fn test_repay_installment_zero_amount_rejected() {
 
     // Zero-amount payment must be rejected
     t.client.repay_installment(&user, &loan_id, &0, &0);
+}
+
+// ─── waterfall — bucket accounting & order ────────────────────────────────────
+
+/// Helper: assert that the invariant `remaining_balance == sum of all outstanding
+/// buckets` holds for a given loan.
+fn assert_bucket_invariant(t: &TestCtx, loan_id: u64) {
+    let loan = t.client.get_loan(&loan_id);
+    let sum = loan.principal_outstanding
+        + loan.interest_outstanding
+        + loan.service_fee_outstanding
+        + loan.late_fees_outstanding;
+    assert_eq!(
+        loan.remaining_balance, sum,
+        "remaining_balance must equal sum of all outstanding buckets"
+    );
+}
+
+#[test]
+fn test_waterfall_order_late_fees_paid_first() {
+    // Verify that late fees are settled before interest, service fee, and principal.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    // Manually set late fees to simulate an overdue loan without time travel.
+    let mut loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.late_fees_outstanding, 0);
+
+    // We'll use apply_late_fees after advancing time.
+    let due_date = loan.repayment_schedule.get(0).unwrap().due_date;
+    t.env.ledger().set_timestamp(due_date + crate::types::SECONDS_PER_DAY); // 1 day overdue
+    t.client.apply_late_fees(&loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    let late_fees_before = loan.late_fees_outstanding;
+    assert!(late_fees_before > 0, "late fees should have accrued");
+
+    // Pay exactly the late fees + interest + service fee (leave principal).
+    let partial = late_fees_before + loan.interest_outstanding + loan.service_fee_outstanding;
+    t.mint(&user, partial);
+    t.client.repay_loan(&user, &loan_id, &partial);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Late fees, interest, and service fee must be zero after payment.
+    assert_eq!(loan.late_fees_outstanding, 0, "late fees paid first");
+    assert_eq!(loan.interest_outstanding, 0, "interest paid after late fees");
+    assert_eq!(loan.service_fee_outstanding, 0, "service fee paid after interest");
+    // Only principal remains.
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_waterfall_bucket_invariant_after_repay_loan() {
+    // After every repay_loan the invariant must hold.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    // Invariant after creation.
+    assert_bucket_invariant(&t, loan_id);
+
+    // Partial payment.
+    t.mint(&user, 200);
+    t.client.repay_loan(&user, &loan_id, &200);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Another partial payment.
+    t.mint(&user, 300);
+    t.client.repay_loan(&user, &loan_id, &300);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Full payment.
+    let loan = t.client.get_loan(&loan_id);
+    t.mint(&user, loan.remaining_balance);
+    t.client.repay_loan(&user, &loan_id, &loan.remaining_balance);
+    assert_bucket_invariant(&t, loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.remaining_balance, 0);
+    assert_eq!(loan.status, LoanStatus::Paid);
+}
+
+#[test]
+fn test_repay_loan_partial_buckets_decremented() {
+    // A partial payment of 300 should decrement interest and service fee
+    // first (as part of the waterfall: late fees→interest→service fee→principal).
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    t.mint(&user, 300);
+    t.client.repay_loan(&user, &loan_id, &300);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Payment of 300: no late fees → 40 interest → 10 service fee → 250 principal.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL - 250);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - 300);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_repay_installment_buckets_decremented() {
+    // repay_installment must decrement the individual buckets via the waterfall.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    t.mint(&user, payment);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Payment of 500: 40 interest → 10 service fee → 450 principal.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL - 450);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - payment);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_repay_installment_full_payment_sets_paid_and_buckets_zeroed() {
+    // Full repayment via repay_installment must zero all buckets and mark Paid.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 1);
+
+    t.mint(&user, DEFAULT_TOTAL_DUE);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &DEFAULT_TOTAL_DUE);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Paid);
+    assert_eq!(loan.remaining_balance, 0);
+    assert_eq!(loan.principal_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_waterfall_bucket_invariant_after_repay_installment() {
+    // After every repay_installment the invariant must hold.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 3);
+
+    // Pay first installment.
+    let p1 = 350_i128;
+    t.mint(&user, p1);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &p1);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Pay second installment.
+    let p2 = 350_i128;
+    t.mint(&user, p2);
+    t.env.ledger().set_timestamp(15000);
+    t.client.repay_installment(&user, &loan_id, &1, &p2);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Pay final installment.
+    let loan = t.client.get_loan(&loan_id);
+    t.mint(&user, loan.remaining_balance);
+    t.env.ledger().set_timestamp(25000);
+    t.client.repay_installment(&user, &loan_id, &2, &loan.remaining_balance);
+    assert_bucket_invariant(&t, loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Paid);
+}
+
+#[test]
+fn test_repay_installment_active_debt_decremented() {
+    // repay_installment must decrease the borrower's active debt.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    let before = t.client.get_user_active_debt(&user);
+    assert_eq!(before, DEFAULT_TOTAL_DUE);
+
+    let payment = 300_i128;
+    t.mint(&user, payment);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let after = t.client.get_user_active_debt(&user);
+    assert_eq!(after, DEFAULT_TOTAL_DUE - payment);
+    assert_bucket_invariant(&t, loan_id);
 }
 
 #[test]

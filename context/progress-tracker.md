@@ -16,6 +16,15 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Issue #58 — Principal-Interest-Fee Repayment Waterfall
+- Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
+- Fixed `repay_loan()` to use the corrected waterfall order (was principal-first, now late-fees-first)
+- Rewrote `repay_installment()` to: accrue late fees, apply waterfall, transfer tokens, call pool's `receive_repayment()`, return guarantee on full repayment, update reputation
+- Each `*_outstanding` bucket decremented correctly per payment
+- `remaining_balance == sum(all outstanding buckets)` invariant asserted in tests
+- Added 8 new tests: waterfall order verification, bucket invariant for both repay_loan and repay_installment, partial/full bucket decrementation, full repayment via repay_installment, active debt tracking
+- Updated `test_repay_loan_auto_accrues_late_fees` for new waterfall behavior (late fees paid first, not last)
+
 ### Issue #7 — Vendor Approval Flow
 - Added `VendorStatus` enum (`Pending`, `Approved`, `Suspended`, `Rejected`) to `types.rs`
 - Replaced `active: bool` with `status: VendorStatus` in `VendorInfo`

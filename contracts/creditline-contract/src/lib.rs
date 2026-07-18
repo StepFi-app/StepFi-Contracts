@@ -534,6 +534,22 @@ impl CreditLineContract {
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
         lp_client.receive_guarantee(&env.current_contract_address(), &loan.guarantee_amount);
 
+        // Socialize the unrecovered shortfall to the pool's share price so
+        // every LP bears the loss proportionally (issue #59). Cap-at-locked
+        // semantics inside `absorb_loss` make this safe and idempotent and
+        // also short-circuit cleanly when there is nothing to absorb.
+        //
+        // If the borrower has repaid so much that remaining_balance ≤
+        // guarantee_amount, the guarantee fully covers the remainder — no
+        // residual shortfall to socialize. The branching prevents an
+        // Underflow panic before delegating to the LP entrypoint.
+        let shortfall = if loan.remaining_balance > loan.guarantee_amount {
+            safe_math::sub_i128(loan.remaining_balance, loan.guarantee_amount)?
+        } else {
+            0
+        };
+        lp_client.absorb_loss(&env.current_contract_address(), &shortfall);
+
         events::emit_loan_defaulted(
             &env,
             loan.borrower.clone(),

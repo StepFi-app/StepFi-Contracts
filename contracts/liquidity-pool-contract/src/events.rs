@@ -6,6 +6,7 @@ const LOAN_FUNDED: Symbol = symbol_short!("LQFUND");
 const REPAYMENT_RCV: Symbol = symbol_short!("LQREPAY");
 const GUARANTEE_RCV: Symbol = symbol_short!("LQGUART");
 const INTEREST_DIST: Symbol = symbol_short!("LQINTDST");
+const LOSS_ABSORBED: Symbol = symbol_short!("LQABSORB");
 
 /// Emitted when a liquidity provider deposits tokens
 pub fn emit_liquidity_deposited(env: &Env, provider: &Address, amount: i128, shares_issued: i128) {
@@ -51,6 +52,31 @@ pub fn emit_interest_distributed(
     env.events().publish(
         (INTEREST_DIST,),
         (total_interest, lp_amount, protocol_amount, merchant_amount),
+    );
+}
+
+/// Emitted when the pool socializes a loss via `absorb_loss`.
+///
+/// Topic `(LQABSORB, creditline)` lets indexers correlate the loss event back
+/// to the originating loan manager.
+///
+/// Data `(shortfall, absorbed)`:
+/// * `shortfall` — the unrecovered principal reported by the caller (the
+///                  CreditLine passes `remaining_balance - guarantee_amount`).
+/// * `absorbed`  — the actual amount written off `locked_liquidity` and
+///                  `total_liquidity`. Always ≤ `shortfall`: the cap-at-locked
+///                  guard prevents negative liquidity and makes the call
+///                  idempotent for retries, partial when `shortfall` exceeds
+///                  current `locked_liquidity`.
+pub fn emit_loss_absorbed(
+    env: &Env,
+    creditline: &Address,
+    shortfall: i128,
+    absorbed: i128,
+) {
+    env.events().publish(
+        (LOSS_ABSORBED, creditline),
+        (shortfall, absorbed),
     );
 }
 

@@ -86,6 +86,11 @@ impl MockLiquidityPool {
         env.storage().instance().set(&symbol_short!("GUAMT"), &amount);
     }
 
+    pub fn absorb_loss(env: Env, _creditline: Address, shortfall: i128) {
+        env.storage().instance().set(&symbol_short!("ABSORB"), &true);
+        env.storage().instance().set(&symbol_short!("ABAMT"), &shortfall);
+    }
+
     pub fn was_fund_loan_called(env: Env) -> bool {
         env.storage().instance().get(&symbol_short!("FUND")).unwrap_or(false)
     }
@@ -100,6 +105,14 @@ impl MockLiquidityPool {
 
     pub fn get_receive_guarantee_amount(env: Env) -> i128 {
         env.storage().instance().get(&symbol_short!("GUAMT")).unwrap_or(0)
+    }
+
+    pub fn was_absorb_loss_called(env: Env) -> bool {
+        env.storage().instance().get(&symbol_short!("ABSORB")).unwrap_or(false)
+    }
+
+    pub fn get_absorb_loss_amount(env: Env) -> i128 {
+        env.storage().instance().get(&symbol_short!("ABAMT")).unwrap_or(0)
     }
 }
 
@@ -128,6 +141,8 @@ mod mock_empty_pool {
         pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
 
         pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn absorb_loss(_env: Env, _creditline: Address, _shortfall: i128) {}
     }
 }
 use mock_empty_pool::MockLiquidityPoolEmpty;
@@ -311,6 +326,14 @@ impl TestCtx {
 
     fn get_receive_guarantee_amount(&self) -> i128 {
         MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_guarantee_amount()
+    }
+
+    fn was_absorb_loss_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_absorb_loss_called()
+    }
+
+    fn get_absorb_loss_amount(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_absorb_loss_amount()
     }
 
     fn reputation_score(&self, user: &Address) -> u32 {
@@ -1741,6 +1764,165 @@ fn test_zero_grace_period_allows_immediate_default() {
 
     t.env.ledger().set_timestamp(due_date + 1);
     t.client.mark_defaulted(&loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Defaulted);
+}
+
+// ─── Issue #59 — Real LiquidityPool integration (loss socialization) ──────────
+//
+// The mock-based tests above prove `mark_defaulted` *invokes* `absorb_loss`.
+// This end-to-end test wires up the *real* `LiquidityPoolContract` so the
+// share-price drop is asserted on actual pool state — closing the loop left
+// open by mocks.
+
+/// Helper: instantiate a real `LiquidityPoolContract` and link it to the
+/// creditline address, returning the pool client.
+fn attach_real_liquidity_pool(
+    t: &TestCtx,
+    token: &Address,
+    treasury: &Address,
+    merchant_fund: &Address,
+    pool_creditline: &Address,
+) -> LiquidityPoolContractClient<'static> {
+    let pool_id = t
+        .env
+        .register(liquidity_pool_contract::LiquidityPoolContract, ());
+    let pool = LiquidityPoolContractClient::new(&t.env, &pool_id);
+    pool.initialize(&t.admin, token, treasury, merchant_fund);
+    pool.set_creditline(&t.admin, pool_creditline);
+    // SAFETY: env outlives client — same pattern as elsewhere in this file.
+    let pool: LiquidityPoolContractClient<'static> = unsafe { core::mem::transmute(pool) };
+    pool
+}
+
+#[test]
+fn test_mark_defaulted_socializes_loss_to_real_pool_share_price() {
+    // End-to-end: real LiquidityPoolContract + real CreditLineContract.
+    // After `mark_defaulted` the LP share_price must have dropped relative
+    // to the pre-default baseline, proving the loss-socialization entrypoint
+    // was wired correctly.
+    let t = TestCtx::setup();
+    let token_admin = Address::generate(&t.env);
+    let token = t
+        .env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let treasury = Address::generate(&t.env);
+    let merchant_fund = Address::generate(&t.env);
+
+    // Re-init the creditline contract so its `liquidity_pool` points at the
+    // *real* pool. The TestCtx helper above used a mock; switch to the real
+    // contract and wire it up.
+    let admin = t.admin.clone();
+    let rep_id = t.rep_id.clone();
+    let vendor_registry_id = t.vendor_registry_id.clone();
+    let pool_creditline_address = t.client.address.clone(); // creditline == this contract
+    let pool_client = attach_real_liquidity_pool(
+        &t,
+        &token,
+        &treasury,
+        &merchant_fund,
+        &pool_creditline_address,
+    );
+
+    t.client.set_liquidity_pool(&admin, &pool_client.address);
+
+    // Fund the LP pool with 1000 tokens from one provider.
+    let provider = Address::generate(&t.env);
+    let token_sac = StellarAssetClient::new(&t.env, &token);
+    token_sac.mint(&provider, &1_000);
+    pool_client.deposit(&provider, &1_000);
+
+    // Snapshot pre-default share price.
+    let price_before_default = pool_client.get_share_price();
+    assert_eq!(price_before_default, 10_000); // $1.00 in BPS
+
+    // Create a loan so the pool has locked liquidity.
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Real LP Test Vendor");
+
+    t.env.ledger().set_timestamp(1_000);
+    let due_date = 5_000_u64;
+    let schedule = t.single_installment(1_050, due_date);
+    t.mint(&user, 1_200); // 200 guarantee + headroom for creditline-side transfers
+    let _loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Advance past due date and trigger mark_defaulted.
+    t.env.ledger().set_timestamp(due_date + 1);
+    let res = t.client.try_mark_defaulted(&1u64);
+    assert!(res.is_ok(), "mark_defaulted must succeed in real-LP setup");
+
+    // After default: share_price must have dropped.
+    let price_after_default = pool_client.get_share_price();
+    assert!(
+        price_after_default < price_before_default,
+        "share_price must drop after loss socialization (was {price_before_default}, now {price_after_default})"
+    );
+
+    // The pool's locked_liquidity should be zero after absorb_loss.
+    let stats = pool_client.get_pool_stats();
+    assert_eq!(
+        stats.locked_liquidity, 0,
+        "locked_liquidity must zero out after absorb_loss"
+    );
+
+    // The LQABSORB event must have been emitted (one entry per defaulted loan).
+    let events = t.env.events().all();
+    let mut loss_event_emitted = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
+        if topic == soroban_sdk::Symbol::new(&t.env, "LQABSORB") {
+            loss_event_emitted = true;
+            break;
+        }
+    }
+    assert!(
+        loss_event_emitted,
+        "LQABSORB event must be emitted by the pool on default"
+    );
+}
+
+#[test]
+fn test_mark_defaulted_with_remaining_below_guarantee_skips_loss() {
+    // Edge case review: when borrower has repaid so much that
+    // remaining_balance ≤ guarantee_amount, the new `if remaining > guarantee`
+    // guard must skip the absorb_loss call (preventing Underflow panic).
+    // We simulate this by setting grace_period_seconds = 0 (immediate default)
+    // and asserting the call still succeeds after a partial repayment.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Near Full Repay Vendor");
+
+    setup_parameters_with_grace_period(&t, 0);
+
+    t.env.ledger().set_timestamp(1_000);
+    let due_date = 5_000_u64;
+    let schedule = t.single_installment(1_050, due_date);
+    // Mint enough for the 200 guarantee + a substantial partial repayment.
+    t.mint(&user, 1_050);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Repay 950 (full principal + most fees). remaining_balance drops below
+    // guarantee_amount (200). Loan is still Active because remaining_balance > 0.
+    t.client.repay_loan(&user, &loan_id, &950);
+    let loan_after_repay = t.client.get_loan(&loan_id);
+    assert!(loan_after_repay.remaining_balance < loan_after_repay.guarantee_amount);
+
+    // Move past the grace window. mark_defaulted must succeed without
+    // Underflow because the guard short-circuits to shortfall = 0.
+    t.env.ledger().set_timestamp(due_date + 1);
+    let res = t.client.try_mark_defaulted(&loan_id);
+    assert!(
+        res.is_ok(),
+        "mark_defaulted must succeed even when remaining_balance < guarantee_amount"
+    );
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Defaulted);

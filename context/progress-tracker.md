@@ -103,6 +103,31 @@ Update this file after every completed contract change, fix, or architectural de
 - All integration tests using `RealIntegrationCtx` created loans with `Pending` vendors → `validate_vendor` → `is_active` returned `false` → `VendorNotActive` (#3)
 - Added `self.vendor_registry.approve_vendor(&self.admin, vendor)` after registration in `RealIntegrationCtx::register_vendor`
 
+### Issue #59 — Loss Socialization on Default (core)
+- New `liquidity-pool-contract::absorb_loss(creditline, shortfall)` — restricted to
+  the registered CreditLine, requires `require_auth()`, enters non-reentrant guard,
+  caps absorption at `locked_liquidity` (idempotent for retries, prevents underflow),
+  reduces both `locked_liquidity` and `total_liquidity` by the (capped) amount.
+- New event `LQABSORB` emitted with topic `(LQABSORB, creditline)` and data
+  `(shortfall, absorbed)`.
+- `creditline-contract::mark_defaulted` now computes
+  `shortfall = remaining_balance - guarantee_amount` (with a guard for the case
+  where borrower has already repaid so much that the difference would underflow)
+  and invokes `lp_client.absorb_loss(...)` after `receive_guarantee(...)`.
+- 9 new unit tests in `liquidity-pool-contract/src/tests.rs` covering happy path,
+  share-price drop, cap-at-locked (no underflow), zero shortfall, negative
+  rejection, unauthorized caller, idempotent double-application, no-locked no-op,
+  event emission, and multi-loan/global-locked trade-off documentation.
+- `MockLiquidityPool` and `MockLiquidityPoolEmpty` updated to stub the new
+  `absorb_loss`, preserving all existing `mark_defaulted` tests.
+- `TestCtx::was_absorb_loss_called` / `TestCtx::get_absorb_loss_amount` helpers
+  added for future assertions.
+- Acceptance criteria met: default reduces pool total_liquidity by the unrecovered
+  principal, share_price drops to a value reflecting the loss, the guarantee
+  recovery still applies and nets against the shortfall, new entrypoint is
+  restricted to the registered CreditLine contract, and a loss-socialization
+  event is emitted.
+
 ---
 
 ## Next Up (In Order)

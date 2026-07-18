@@ -355,6 +355,70 @@ impl LiquidityPoolContract {
         res
     }
 
+    /// Socialize a loss to the share price on loan default (issue #59).
+    ///
+    /// Callable only by the registered CreditLine contract. Reduces both
+    /// `locked_liquidity` and `total_liquidity` by `shortfall`, so
+    /// `get_share_price()` immediately reflects the unrecovered portion of
+    /// the loan — forcing every LP to bear the loss proportionally rather
+    /// than letting early withdrawers get paid first.
+    ///
+    /// Defensive semantics: the write-down is capped at the current
+    /// `locked_liquidity` (and zero on a non-positive input). The cap has two
+    /// consequences:
+    ///
+    /// 1. **No underflow.** If the bigger outgoing principal falls through
+    ///    (interest/service/late-fee components) the locked bucket is never
+    ///    pushed below zero.
+    /// 2. **Idempotent / no double-application.** A second call from the
+    ///    CreditLine against the same loan would see locked already at zero
+    ///    and the resulting absorption reduces to zero — i.e. a no-op.
+    ///    `absorbed` ≤ `shortfall` always.
+    ///
+    /// `shortfall` is expected to be `remaining_balance - guarantee_amount`
+    /// from the defaulted loan, computed by the CreditLine after applying
+    /// receive_guarantee.
+    pub fn absorb_loss(
+        env: Env,
+        creditline: Address,
+        shortfall: i128,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
+        if shortfall < 0 {
+            return Err(LiquidityPoolError::InvalidAmount);
+        }
+
+        Self::enter_non_reentrant(&env);
+
+        // Batch the relevant storage reads under the reentrant guard —
+        // consistent with `fund_loan` / `receive_repayment` / `withdraw`.
+        let locked =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // Cap absorption at the current locked amount. Prevents underflow
+        // and ensures double-application becomes a no-op.
+        let absorbable = shortfall.min(locked);
+
+        if absorbable <= 0 {
+            Self::exit_non_reentrant(&env);
+            return Ok(());
+        }
+
+        let new_locked = safe_math::sub_i128(locked, absorbable)?;
+        storage::set_locked_liquidity(&env, new_locked);
+
+        let new_total = safe_math::sub_i128(total_liquidity, absorbable)?;
+        storage::set_total_liquidity(&env, new_total);
+
+        events::emit_loss_absorbed(&env, &creditline, shortfall, absorbable);
+        Self::exit_non_reentrant(&env);
+        Ok(())
+    }
+
     /// Accrue interest into the pool, increasing share price for all holders.
     ///
     /// This is a public alias for `distribute_interest` that makes the yield

@@ -3386,6 +3386,100 @@ fn test_repay_installment_happy_path() {
     let inst2 = loan.repayment_schedule.get(1).unwrap();
     assert!(!inst2.paid);
     assert_eq!(inst2.paid_at, 0);
+
+    // Assert token transfer from user and pool interaction
+    assert_eq!(t.balance(&user), 0);
+    let lp_client = MockLiquidityPoolClient::new(&t.env, &t.lp_id);
+    assert!(lp_client.was_receive_repayment_called());
+}
+
+#[test]
+fn test_repay_installment_real_settlement_end_to_end() {
+    let t = RealIntegrationCtx::setup();
+    let provider = Address::generate(&t.env);
+    let borrower = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    t.register_vendor(&vendor, "Learn Vendor");
+    t.set_score(&borrower, 100);
+
+    // 1. Fund liquidity pool with 10,000 USDC
+    t.fund_pool(&provider, 10_000);
+
+    let initial_pool_stats = t.pool.get_pool_stats();
+    assert_eq!(initial_pool_stats.total_liquidity, 10_000);
+    assert_eq!(initial_pool_stats.locked_liquidity, 0);
+    let initial_share_price = initial_pool_stats.share_price;
+
+    // 2. Create and fund a 2-installment loan (Principal 1000, Guarantee 200, Total 1050)
+    // Pool contribution = 1000 - 200 = 800 USDC
+    let principal = 1000_i128;
+    let guarantee = 200_i128;
+    t.mint(&borrower, guarantee);
+
+    let due_date = t.env.ledger().timestamp() + 10_000;
+    let total_due = 1050_i128; // principal (1000) + interest (40) + fee (10)
+    let inst_amount = total_due / 2; // 525 per installment
+
+    let mut schedule = soroban_sdk::Vec::new(&t.env);
+    schedule.push_back(RepaymentInstallment {
+        amount: inst_amount,
+        due_date,
+        paid: false,
+        paid_at: 0,
+    });
+    schedule.push_back(RepaymentInstallment {
+        amount: inst_amount,
+        due_date: due_date + 10_000,
+        paid: false,
+        paid_at: 0,
+    });
+
+    let loan_id = t.creditline.create_loan(
+        &borrower,
+        &vendor,
+        &principal,
+        &guarantee,
+        &schedule,
+        &LoanType::LearnerInstallment,
+    );
+
+    let post_fund_stats = t.pool.get_pool_stats();
+    assert_eq!(post_fund_stats.locked_liquidity, 800); // 800 USDC locked (pool contribution)
+
+    // 3. Borrower repays first installment (525 USDC)
+    t.mint(&borrower, inst_amount);
+    let borrower_bal_before = t.balance(&borrower);
+    assert_eq!(borrower_bal_before, inst_amount);
+
+    let remaining1 = t.creditline.repay_installment(&borrower, &loan_id, &0, &inst_amount);
+    assert_eq!(remaining1, 525);
+
+    // Assert borrower USDC balance debited
+    assert_eq!(t.balance(&borrower), 0);
+
+    // Assert locked_liquidity reduced by 525 USDC principal paid (800 - 525 = 275)
+    let post_inst1_stats = t.pool.get_pool_stats();
+    assert_eq!(post_inst1_stats.locked_liquidity, 275);
+
+    // 4. Borrower repays second/final installment (525 USDC)
+    t.mint(&borrower, inst_amount);
+    let remaining2 = t.creditline.repay_installment(&borrower, &loan_id, &1, &inst_amount);
+    assert_eq!(remaining2, 0);
+
+    // Assert loan transitioned to Paid
+    let loan = t.creditline.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Paid);
+
+    // Assert pool locked_liquidity is now 0
+    let post_inst2_stats = t.pool.get_pool_stats();
+    assert_eq!(post_inst2_stats.locked_liquidity, 0);
+
+    // Assert pool share price appreciated from interest distribution
+    assert!(post_inst2_stats.share_price > initial_share_price);
+
+    // Assert guarantee refund settled to borrower (200 USDC)
+    assert_eq!(t.balance(&borrower), guarantee);
 }
 
 #[test]

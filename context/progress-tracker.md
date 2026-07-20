@@ -16,6 +16,14 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### repay_installment Real Settlement & Pool Accounting
+- Updated `repay_installment()` in `creditline-contract/src/lib.rs` to pull USDC tokens from borrower on installment repayment.
+- Implemented repayment waterfall (principal -> interest -> service fee -> late fee) using `safe_math` in `repay_installment()`.
+- Added `LiquidityPoolContractClient::receive_repayment` call to route principal and interest to the liquidity pool contract, reducing pool `locked_liquidity` and appreciating share price from interest distribution.
+- Added guarantee refund transfer back to borrower and reputation increase trigger when remaining loan balance reaches 0 (`LoanStatus::Paid`).
+- Preserved checks-effects-interactions order and reentrancy guard (`enter_non_reentrant` / `exit_non_reentrant`).
+- Updated `test_repay_installment_happy_path` and added `test_repay_installment_real_settlement_end_to_end` asserting token balances, locked liquidity reduction, pool share price appreciation, and loan completion.
+
 ### Issue #7 — Vendor Approval Flow
 - Added `VendorStatus` enum (`Pending`, `Approved`, `Suspended`, `Rejected`) to `types.rs`
 - Replaced `active: bool` with `status: VendorStatus` in `VendorInfo`

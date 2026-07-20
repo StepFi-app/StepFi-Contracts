@@ -751,7 +751,9 @@ impl CreditLineContract {
     /// Mark a single installment paid and reduce the loan's outstanding balance by `amount`.
     ///
     /// Borrower-only. Validates the installment index, ensures the slot is unpaid, debits the
-    /// remaining balance, sets `paid`/`paid_at`, persists the loan, and emits `INSTPAID`.
+    /// remaining balance, sets `paid`/`paid_at`, transfers tokens, routes principal and interest
+    /// to the liquidity pool, refunds guarantee if fully paid, updates reputation, persists the
+    /// loan, and emits `INSTPAID`.
     pub fn repay_installment(
         env: Env,
         borrower: Address,
@@ -784,11 +786,42 @@ impl CreditLineContract {
             return Err(CreditLineError::InstallmentAlreadyPaid);
         }
 
+        // Accrue any outstanding late fees before validating the payment amount so
+        // the borrower repays against the true current balance.
+        let accrued_fee = Self::accrue_late_fees_internal(&env, &mut loan)?;
+        if accrued_fee > 0 {
+            storage::increase_user_active_debt(&env, &borrower, accrued_fee)
+                .unwrap_or_else(|err| panic_with_error!(&env, err));
+            events::emit_late_fee_accrued(
+                &env,
+                &borrower,
+                loan_id,
+                accrued_fee,
+                loan.remaining_balance,
+            );
+        }
+
         if amount <= 0 || amount > loan.remaining_balance {
             return Err(CreditLineError::InvalidRepaymentAmount);
         }
 
         Self::enter_non_reentrant(&env);
+
+        // Payment priority: principal → interest → service fee → late fees
+        let principal_paid = amount.min(loan.principal_outstanding);
+        let after_principal = safe_math::sub_i128(amount, principal_paid)?;
+        let interest_paid = after_principal.min(loan.interest_outstanding);
+        let after_interest = safe_math::sub_i128(after_principal, interest_paid)?;
+        let fee_paid = after_interest.min(loan.service_fee_outstanding);
+        let after_fee = safe_math::sub_i128(after_interest, fee_paid)?;
+        let late_fee_paid = after_fee.min(loan.late_fees_outstanding);
+
+        loan.principal_outstanding =
+            safe_math::sub_i128(loan.principal_outstanding, principal_paid)?;
+        loan.interest_outstanding = safe_math::sub_i128(loan.interest_outstanding, interest_paid)?;
+        loan.service_fee_outstanding = safe_math::sub_i128(loan.service_fee_outstanding, fee_paid)?;
+        loan.late_fees_outstanding =
+            safe_math::sub_i128(loan.late_fees_outstanding, late_fee_paid)?;
 
         let new_balance = safe_math::sub_i128(loan.remaining_balance, amount)?;
         loan.remaining_balance = new_balance;
@@ -797,7 +830,8 @@ impl CreditLineContract {
         installment.paid_at = env.ledger().timestamp();
         loan.repayment_schedule.set(installment_index, installment);
 
-        if new_balance == 0 {
+        let is_fully_repaid = new_balance == 0;
+        if is_fully_repaid {
             loan.status = LoanStatus::Paid;
         }
 
@@ -805,7 +839,52 @@ impl CreditLineContract {
             .unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::write_loan(&env, &loan);
 
+        let lp_address =
+            storage::get_liquidity_pool(&env)?.ok_or(CreditLineError::InsufficientLiquidity)?;
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&borrower, &env.current_contract_address(), &amount);
+        Self::authorize_token_transfer(&env, &token_address, &lp_address, amount);
+
+        let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
+        let interest_fee_late =
+            safe_math::add_i128(safe_math::add_i128(interest_paid, fee_paid)?, late_fee_paid)?;
+        lp_client.receive_repayment(
+            &env.current_contract_address(),
+            &principal_paid,
+            &interest_fee_late,
+        );
+
+        if is_fully_repaid {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &borrower,
+                &loan.guarantee_amount,
+            );
+        }
+
         events::emit_installment_paid(&env, loan_id, installment_index, amount, new_balance);
+
+        if is_fully_repaid {
+            if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
+                let updater = env.current_contract_address();
+                let payment_date = env.ledger().timestamp();
+                let due_date = loan
+                    .repayment_schedule
+                    .last()
+                    .map(|i| i.due_date)
+                    .unwrap_or(0);
+                Self::handle_reputation_increase(
+                    &env,
+                    &reputation_contract,
+                    &updater,
+                    &borrower,
+                    payment_date,
+                    due_date,
+                );
+            }
+        }
 
         Self::exit_non_reentrant(&env);
         Ok(new_balance)

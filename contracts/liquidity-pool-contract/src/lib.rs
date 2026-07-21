@@ -282,6 +282,9 @@ impl LiquidityPoolContract {
         // Decrease locked liquidity by the principal
         let locked =
             storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        if principal > locked {
+            return Err(LiquidityPoolError::Underflow);
+        }
         let new_locked = safe_math::sub_i128(locked, principal)?;
         storage::set_locked_liquidity(&env, new_locked);
 

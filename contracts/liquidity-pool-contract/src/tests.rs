@@ -623,7 +623,7 @@ fn test_absorb_loss_happy_path_reduces_locked_and_total() {
     t.client.receive_guarantee(&t.creditline, &200);
     // After receive_guarantee: locked=600, total=1200.
     t.client
-        .absorb_loss(&t.creditline, &1050_i128 - 200_i128); // 850
+        .absorb_loss(&t.creditline, &(1050_i128 - 200_i128)); // 850
 
     let stats_after = t.client.get_pool_stats();
     // Capped at locked=600 → absorbable=600.

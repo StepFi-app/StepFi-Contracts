@@ -1798,6 +1798,7 @@ fn attach_real_liquidity_pool(
 
 #[test]
 fn test_mark_defaulted_socializes_loss_to_real_pool_share_price() {
+    use soroban_sdk::IntoVal;
     // End-to-end: real LiquidityPoolContract + real CreditLineContract.
     // After `mark_defaulted` the LP share_price must have dropped relative
     // to the pre-default baseline, proving the loss-socialization entrypoint

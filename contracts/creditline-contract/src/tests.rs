@@ -1804,11 +1804,7 @@ fn test_mark_defaulted_socializes_loss_to_real_pool_share_price() {
     // to the pre-default baseline, proving the loss-socialization entrypoint
     // was wired correctly.
     let t = TestCtx::setup();
-    let token_admin = Address::generate(&t.env);
-    let token = t
-        .env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
+    let token = t.token_id.clone();
     let treasury = Address::generate(&t.env);
     let merchant_fund = Address::generate(&t.env);
 

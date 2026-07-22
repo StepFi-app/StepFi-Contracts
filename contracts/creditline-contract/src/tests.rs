@@ -2761,7 +2761,9 @@ fn test_end_to_end_default_path_guarantee_and_penalty() {
         creditline_balance_after_loan - 200
     );
     assert_eq!(t.balance(&t.pool.address), pool_balance_after_loan + 200);
-    assert_eq!(pool_stats.locked_liquidity, 600);
+    // After mark_defaulted now absorbs the unrecovered principal shortfall,
+    // locked_liquidity is fully released (guarantee recovered + loss absorbed = 0 locked).
+    assert_eq!(pool_stats.locked_liquidity, 0);
 }
 
 // ─── late fee tests ───────────────────────────────────────────────────────────

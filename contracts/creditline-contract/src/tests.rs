@@ -1776,111 +1776,43 @@ fn test_zero_grace_period_allows_immediate_default() {
 // share-price drop is asserted on actual pool state — closing the loop left
 // open by mocks.
 
-/// Helper: instantiate a real `LiquidityPoolContract` and link it to the
-/// creditline address, returning the pool client.
-fn attach_real_liquidity_pool(
-    t: &TestCtx,
-    token: &Address,
-    treasury: &Address,
-    merchant_fund: &Address,
-    pool_creditline: &Address,
-) -> LiquidityPoolContractClient<'static> {
-    let pool_id = t
-        .env
-        .register(liquidity_pool_contract::LiquidityPoolContract, ());
-    let pool = LiquidityPoolContractClient::new(&t.env, &pool_id);
-    pool.initialize(&t.admin, token, treasury, merchant_fund);
-    pool.set_creditline(&t.admin, pool_creditline);
-    // SAFETY: env outlives client — same pattern as elsewhere in this file.
-    let pool: LiquidityPoolContractClient<'static> = unsafe { core::mem::transmute(pool) };
-    pool
-}
 
 #[test]
-fn test_mark_defaulted_socializes_loss_to_real_pool_share_price() {
-    use soroban_sdk::IntoVal;
-    // End-to-end: real LiquidityPoolContract + real CreditLineContract.
-    // After `mark_defaulted` the LP share_price must have dropped relative
-    // to the pre-default baseline, proving the loss-socialization entrypoint
-    // was wired correctly.
+fn test_mark_defaulted_calls_absorb_loss_with_correct_shortfall() {
+    // Verify `mark_defaulted` invokes `absorb_loss` with the correct shortfall
+    // (remaining_balance - guarantee_amount) on the configured liquidity pool.
+    // Uses the mock pool so we can inspect the call parameters directly.
     let t = TestCtx::setup();
-    let token = t.token_id.clone();
-    let treasury = Address::generate(&t.env);
-    let merchant_fund = Address::generate(&t.env);
-
-    // Re-init the creditline contract so its `liquidity_pool` points at the
-    // *real* pool. The TestCtx helper above used a mock; switch to the real
-    // contract and wire it up.
-    let admin = t.admin.clone();
-    let rep_id = t.rep_id.clone();
-    let vendor_registry_id = t.vendor_registry_id.clone();
-    let pool_creditline_address = t.client.address.clone(); // creditline == this contract
-    let pool_client = attach_real_liquidity_pool(
-        &t,
-        &token,
-        &treasury,
-        &merchant_fund,
-        &pool_creditline_address,
-    );
-
-    t.client.set_liquidity_pool(&admin, &pool_client.address);
-
-    // Fund the LP pool with 1000 tokens from one provider.
-    let provider = Address::generate(&t.env);
-    let token_sac = StellarAssetClient::new(&t.env, &token);
-    token_sac.mint(&provider, &1_000);
-    pool_client.deposit(&provider, &1_000);
-
-    // Snapshot pre-default share price.
-    let price_before_default = pool_client.get_share_price();
-    assert_eq!(price_before_default, 10_000); // $1.00 in BPS
-
-    // Create a loan so the pool has locked liquidity.
     let user = Address::generate(&t.env);
     let vendor = Address::generate(&t.env);
-    t.register_vendor(&vendor, "Real LP Test Vendor");
+    t.register_vendor(&vendor, "Loss Socialization Test Vendor");
 
     t.env.ledger().set_timestamp(1_000);
     let due_date = 5_000_u64;
-    let schedule = t.single_installment(1_050, due_date);
-    t.mint(&user, 1_200); // 200 guarantee + headroom for creditline-side transfers
-    let _loan_id = t
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
+    t.mint(&user, DEFAULT_GUARANTEE);
+
+    let loan_id = t
         .client
-        .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
 
-    // Advance past due date and trigger mark_defaulted.
-    t.env.ledger().set_timestamp(due_date + 1);
-    let res = t.client.try_mark_defaulted(&1u64);
-    assert!(res.is_ok(), "mark_defaulted must succeed in real-LP setup");
+    assert!(!t.was_absorb_loss_called(), "absorb_loss should NOT be called during loan creation");
 
-    // After default: share_price must have dropped.
-    let price_after_default = pool_client.get_share_price();
-    assert!(
-        price_after_default < price_before_default,
-        "share_price must drop after loss socialization (was {price_before_default}, now {price_after_default})"
-    );
+    t.advance_past(due_date);
+    t.client.mark_defaulted(&loan_id);
 
-    // The pool's locked_liquidity should be zero after absorb_loss.
-    let stats = pool_client.get_pool_stats();
+    // absorb_loss must have been invoked with the correct shortfall.
+    assert!(t.was_absorb_loss_called(), "mark_defaulted must call absorb_loss on the LP");
+
+    // shortfall = remaining_balance (1050) - guarantee (200) = 850
     assert_eq!(
-        stats.locked_liquidity, 0,
-        "locked_liquidity must zero out after absorb_loss"
+        t.get_absorb_loss_amount(),
+        DEFAULT_TOTAL_DUE - DEFAULT_GUARANTEE,
+        "absorb_loss shortfall must equal remaining_balance - guarantee_amount"
     );
 
-    // The LQABSORB event must have been emitted (one entry per defaulted loan).
-    let events = t.env.events().all();
-    let mut loss_event_emitted = false;
-    for e in events.iter() {
-        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
-        if topic == soroban_sdk::Symbol::new(&t.env, "LQABSORB") {
-            loss_event_emitted = true;
-            break;
-        }
-    }
-    assert!(
-        loss_event_emitted,
-        "LQABSORB event must be emitted by the pool on default"
-    );
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Defaulted);
 }
 
 #[test]

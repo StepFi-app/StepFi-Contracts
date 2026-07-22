@@ -79,11 +79,22 @@ impl MockLiquidityPool {
         env.storage().instance().set(&symbol_short!("REPRD"), &true);
         env.storage().instance().set(&symbol_short!("RPAMT"), &amount);
         env.storage().instance().set(&symbol_short!("RPFEE"), &fee);
+    }    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("GUARD"), &true);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("GUAMT"), &amount);
     }
 
-    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
-        env.storage().instance().set(&symbol_short!("GUARD"), &true);
-        env.storage().instance().set(&symbol_short!("GUAMT"), &amount);
+    pub fn absorb_loss(env: Env, _from: Address, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LOSSRD"), &true);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LOSSAM"), &amount);
     }
 
     pub fn was_fund_loan_called(env: Env) -> bool {
@@ -96,10 +107,25 @@ impl MockLiquidityPool {
 
     pub fn was_receive_guarantee_called(env: Env) -> bool {
         env.storage().instance().get(&symbol_short!("GUARD")).unwrap_or(false)
+    }    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("GUAMT"))
+            .unwrap_or(0)
     }
 
-    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
-        env.storage().instance().get(&symbol_short!("GUAMT")).unwrap_or(0)
+    pub fn was_absorb_loss_called(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("LOSSRD"))
+            .unwrap_or(false)
+    }
+
+    pub fn get_absorb_loss_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("LOSSAM"))
+            .unwrap_or(0)
     }
 }
 
@@ -128,6 +154,8 @@ mod mock_empty_pool {
         pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
 
         pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn absorb_loss(_env: Env, _from: Address, _amount: i128) {}
     }
 }
 use mock_empty_pool::MockLiquidityPoolEmpty;
@@ -311,6 +339,14 @@ impl TestCtx {
 
     fn get_receive_guarantee_amount(&self) -> i128 {
         MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_guarantee_amount()
+    }
+
+    fn was_absorb_loss_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_absorb_loss_called()
+    }
+
+    fn get_absorb_loss_amount(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_absorb_loss_amount()
     }
 
     fn reputation_score(&self, user: &Address) -> u32 {
@@ -3667,4 +3703,213 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::sub_i128(min, 1), Err(CreditLineError::Underflow));
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
+}
+
+// ─── mark_defaulted loss absorption ──────────────────────────────────────────
+
+#[test]
+fn test_mark_defaulted_calls_absorb_loss() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 200);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    // Verify receive_guarantee was called with the guarantee amount
+    assert!(
+        t.was_receive_guarantee_called(),
+        "Expected receive_guarantee to be called"
+    );
+
+    // Verify absorb_loss was called with the correct shortfall
+    // principal_outstanding = 1000, guarantee = 200 → shortfall = 800
+    assert!(
+        t.was_absorb_loss_called(),
+        "Expected absorb_loss to be called on default"
+    );
+    assert_eq!(t.get_absorb_loss_amount(), 800);
+}
+
+#[test]
+fn test_mark_defaulted_zero_shortfall_skips_absorb_loss() {
+    // If guarantee == principal_outstanding, no loss to absorb.
+    // With the default protocol parameters (0% grace), guarantee=1000 on a 1000 loan
+    // means pool_contribution = 0, so no locked liquidity → no loss.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    // Use a loan where guarantee == total_amount → pool funds nothing
+    // But create_loan requires guarantee <= total_amount.
+    // We use total=1000, guarantee=1000 → pool_contribution = 0, principal_outstanding = 1000
+    // After default: principal_outstanding - guarantee = 0, skip absorb_loss
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 1000);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1000, &1000, &schedule, &LoanType::Standard);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    // receive_guarantee should still be called
+    assert!(t.was_receive_guarantee_called());
+    // absorb_loss should NOT be called (shortfall == 0)
+    assert!(!t.was_absorb_loss_called());
+}
+
+#[test]
+fn test_mark_defaulted_absorb_loss_with_partial_repayment() {
+    // After a partial repayment, the absorb_loss amount should reflect
+    // remaining principal minus guarantee.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, 5000);
+    t.mint(&user, DEFAULT_GUARANTEE);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+
+    // Repay some of the loan: 500 out of 1050
+    t.mint(&user, 500);
+    t.client.repay_loan(&user, &loan_id, &500);
+
+    // Verify principal was partially reduced
+    let loan_after_repay = t.client.get_loan(&loan_id);
+    // With the waterfall, 500 repays: late_fees=0, interest=40, service_fee=10, principal=450
+    // principal_outstanding should be 1000 - 450 = 550
+    assert!(loan_after_repay.principal_outstanding < DEFAULT_PRINCIPAL);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    assert!(t.was_absorb_loss_called());
+    // shortfall = principal_outstanding_after_repay - guarantee
+    // = 550 - 200 = 350
+    let expected_shortfall = loan_after_repay.principal_outstanding - DEFAULT_GUARANTEE;
+    assert_eq!(t.get_absorb_loss_amount(), expected_shortfall);
+}
+
+#[test]
+fn test_mark_defaulted_loss_absorption_share_price_impact() {
+    // End-to-end: deposit → fund → default with real pool contract.
+    // Verify share price drops after default.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    use soroban_sdk::{IntoVal, Symbol};
+
+    // Register token
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_sac = StellarAssetClient::new(&env, &token_id);
+
+    // Register real LiquidityPool
+    let lp_id = env.register(LiquidityPoolContract, ());
+    let lp_client = LiquidityPoolContractClient::new(&env, &lp_id);
+
+    // SAFETY: env outlives client — same pattern as other tests
+    let lp_client: LiquidityPoolContractClient<'static> = unsafe { core::mem::transmute(lp_client) };
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let merchant_fund = Address::generate(&env);
+
+    lp_client.initialize(&admin, &token_id, &treasury, &merchant_fund);
+
+    // Register reputation mock
+    let rep_id = env.register(MockReputation, ());
+
+    // Register vendor registry
+    let vendor_registry_id = env.register(VendorRegistryContract, ());
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "initialize"),
+        (&admin,).into_val(&env),
+    );
+
+    // Register CreditLine contract
+    let cl_id = env.register(CreditLineContract, ());
+    let cl_client = CreditLineContractClient::new(&env, &cl_id);
+    let cl_client: CreditLineContractClient<'static> = unsafe { core::mem::transmute(cl_client) };
+
+    cl_client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+    lp_client.set_creditline(&admin, &cl_id);
+
+    // Fund pool with 10_000 tokens
+    let lp = Address::generate(&env);
+    token_sac.mint(&lp, &10_000);
+    lp_client.deposit(&lp, &10_000);
+
+    let share_price_before = lp_client.get_pool_stats().share_price;
+
+    // Create and default a loan
+    let user = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    // Register vendor
+    let vendor_name = SorobanString::from_str(&env, "Test Vendor");
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "register_vendor"),
+        (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
+    );
+
+    env.ledger().set_timestamp(1000);
+    let mut schedule = soroban_sdk::Vec::new(&env);
+    schedule.push_back(RepaymentInstallment {
+        amount: 1050,
+        due_date: 5000,
+        paid: false,
+        paid_at: 0,
+    });
+    token_sac.mint(&user, &200);
+
+    let loan_id = cl_client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &200,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Advance past due date and default
+    env.ledger().set_timestamp(5001);
+    cl_client.mark_defaulted(&loan_id);
+
+    let share_price_after = lp_client.get_pool_stats().share_price;
+    // Before default: total=10_000, shares=10_000, share_price=10_000
+    // After fund_loan(800): total=10_000, locked=800 (share_price unchanged)
+    // After receive_guarantee(200): total=10_200, locked=600
+    // After absorb_loss(800): total=9_400, locked=0
+    // share_price = 9_400 * 10_000 / 10_000 = 9_400
+    assert_eq!(share_price_after, 9_400);
+
+    // Verify pool can still pay LP withdrawals (no unreachable locked liquidity)
+    let pool_stats = lp_client.get_pool_stats();
+    assert_eq!(pool_stats.locked_liquidity, 0);
+    assert!(pool_stats.total_liquidity > 0);
 }

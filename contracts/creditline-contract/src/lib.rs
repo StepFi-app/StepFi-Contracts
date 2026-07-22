@@ -542,6 +542,15 @@ impl CreditLineContract {
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
         lp_client.receive_guarantee(&env.current_contract_address(), &loan.guarantee_amount);
 
+        // Compute unrecovered principal shortfall and socialize the loss to the pool.
+        let principal_shortfall = loan
+            .principal_outstanding
+            .checked_sub(loan.guarantee_amount)
+            .unwrap_or(0);
+        if principal_shortfall > 0 {
+            lp_client.absorb_loss(&env.current_contract_address(), &principal_shortfall);
+        }
+
         events::emit_loan_defaulted(
             &env,
             loan.borrower.clone(),

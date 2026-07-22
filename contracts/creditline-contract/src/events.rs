@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const VENDOR_PAID: Symbol = symbol_short!("VENDPAID");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
 
@@ -153,6 +154,14 @@ pub fn emit_loan_in_grace_period(
             grace_period_ends_at,
             env.ledger().timestamp(),
         ),
+    );
+}
+
+/// Emit a vendor payout event.
+pub fn emit_vendor_paid(env: &Env, vendor: &Address, loan_id: u64, amount: i128) {
+    env.events().publish(
+        (VENDOR_PAID, vendor, loan_id),
+        (amount, env.ledger().timestamp()),
     );
 }
 

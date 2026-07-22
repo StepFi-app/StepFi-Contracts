@@ -3668,3 +3668,103 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
 }
+
+// ─── pay_vendor ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_pay_vendor_transfers_funds_to_vendor() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    let vendor_balance_before = t.balance(&vendor);
+
+    // Pay the vendor — the contract holds the guarantee from create_loan
+    t.client.pay_vendor(&t.admin, &loan_id);
+
+    // Vendor's token balance should increase by the guarantee amount (200)
+    // The LP fund_loan mock doesn't transfer tokens, but the guarantee transfer does
+    assert_eq!(t.balance(&vendor), vendor_balance_before + DEFAULT_GUARANTEE);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")] // NotAdmin
+fn test_pay_vendor_only_admin_can_call() {
+    // With mock_all_auths any address passes require_auth(),
+    // but the access::require_admin check must reject non-admin.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    let intruder = Address::generate(&t.env);
+    // intruder.require_auth() passes (mock_all_auths),
+    // but access::require_admin should panic with NotAdmin
+    t.client.pay_vendor(&intruder, &loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")] // LoanNotActive
+fn test_pay_vendor_requires_active_loan() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    // Create a pending loan via request_loan - it has Pending status, not Active
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(&user, DEFAULT_GUARANTEE);
+    let due_date = t.env.ledger().timestamp() + 10_000;
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, due_date);
+    let loan_id = t.client.request_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+
+    // pay_vendor should fail because the loan is not Active
+    t.client.pay_vendor(&t.admin, &loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // LoanNotFound
+fn test_pay_vendor_nonexistent_loan_fails() {
+    let t = TestCtx::setup();
+    t.client.pay_vendor(&t.admin, &999);
+}
+
+#[test]
+fn test_pay_vendor_emits_event() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    t.client.pay_vendor(&t.admin, &loan_id);
+
+    use soroban_sdk::IntoVal;
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
+
+    let mut vendor_paid_found = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
+        if topic == soroban_sdk::Symbol::new(&t.env, "VENDPAID") {
+            vendor_paid_found = true;
+            break;
+        }
+    }
+    assert!(
+        vendor_paid_found,
+        "Expected VENDPAID event to be emitted"
+    );
+}

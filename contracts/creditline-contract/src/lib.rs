@@ -235,6 +235,54 @@ impl CreditLineContract {
         storage::set_parameters_contract(&env, &address);
     }
 
+    /// Pay the vendor for a loan that was funded (Active) whose payout to the vendor
+    /// failed mid-transaction (e.g. XDR timeout during `create_loan`).
+    ///
+    /// Transfers the vendor's total amount from the pool and the guarantee held by
+    /// this contract to the vendor.  Admin only.
+    pub fn pay_vendor(env: Env, admin: Address, loan_id: u64) -> Result<(), CreditLineError> {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+
+        let loan = storage::read_loan(&env, loan_id)?;
+
+        if loan.status != LoanStatus::Active {
+            return Err(CreditLineError::LoanNotActive);
+        }
+
+        // Calculate the pool contribution (total minus guarantee).
+        let pool_contribution =
+            safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)?;
+
+        // 1. Transfer the guarantee amount from this contract to the vendor.
+        let token_address = storage::get_token(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::TokenNotConfigured));
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &loan.vendor,
+            &loan.guarantee_amount,
+        );
+
+        // 2. Fund the vendor from the liquidity pool.
+        if pool_contribution > 0 {
+            let lp_address = storage::get_liquidity_pool(&env)
+                .unwrap_or_else(|err| panic_with_error!(&env, err))
+                .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::InsufficientLiquidity));
+            let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
+            lp_client.fund_loan(
+                &env.current_contract_address(),
+                &loan.vendor,
+                &pool_contribution,
+            );
+        }
+
+        events::emit_vendor_paid(&env, &loan.vendor, loan_id, loan.total_amount);
+
+        Ok(())
+    }
+
     fn validate_guarantee(
         env: &Env,
         total_amount: i128,

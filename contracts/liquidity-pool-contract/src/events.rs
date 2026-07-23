@@ -6,6 +6,7 @@ const LOAN_FUNDED: Symbol = symbol_short!("LQFUND");
 const REPAYMENT_RCV: Symbol = symbol_short!("LQREPAY");
 const GUARANTEE_RCV: Symbol = symbol_short!("LQGUART");
 const INTEREST_DIST: Symbol = symbol_short!("LQINTDST");
+const LOSS_ABSORBED: Symbol = symbol_short!("LQLOSS");
 
 /// Emitted when a liquidity provider deposits tokens
 pub fn emit_liquidity_deposited(env: &Env, provider: &Address, amount: i128, shares_issued: i128) {
@@ -52,6 +53,11 @@ pub fn emit_interest_distributed(
         (INTEREST_DIST,),
         (total_interest, lp_amount, protocol_amount, merchant_amount),
     );
+}
+
+/// Emitted when a principal shortfall is absorbed from a defaulted loan
+pub fn emit_loss_absorbed(env: &Env, creditline: &Address, principal_shortfall: i128) {
+    env.events().publish((LOSS_ABSORBED, creditline), principal_shortfall);
 }
 
 pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {

@@ -10,6 +10,10 @@ pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 pub const MULTISIG_KEY: Symbol = symbol_short!("MSIG");
 pub const PROP_CNT_KEY: Symbol = symbol_short!("PROPCNT");
 
+// TTL constants (in ledgers — 1 ledger ≈ 5 seconds on mainnet)
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800; // 60 days
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600; // 120 days
+
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&ADMIN_KEY)
 }
@@ -88,7 +92,9 @@ pub fn get_proposal(env: &Env, id: u64) -> Result<Proposal, ParametersError> {
 }
 
 pub fn set_proposal(env: &Env, proposal: &Proposal) {
+    let key = DataKey::Proposal(proposal.id);
+    env.storage().persistent().set(&key, proposal);
     env.storage()
         .persistent()
-        .set(&DataKey::Proposal(proposal.id), proposal);
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }

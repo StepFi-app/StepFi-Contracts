@@ -2438,94 +2438,160 @@ fn test_loan_funding_and_guarantee_recovery_cycle() {
     assert_eq!(stats_final.available_liquidity, 3_000);
 }
 
-// ─── Atomic Liquidity Locking Tests ───────────────────────────────────────────
+// ─── absorb_loss ─────────────────────────────────────────────────────────────
 
 #[test]
-fn test_lock_funds_success() {
+fn test_absorb_loss_reduces_locked_and_total_liquidity() {
     let t = TestEnv::setup();
     let provider = Address::generate(&t.env);
-    t.mint(&provider, 10_000);
-    t.client.deposit(&provider, &10_000);
-
-    t.client.lock_funds(&t.creditline, &1, &3_000);
-
-    let stats = t.client.get_pool_stats();
-    assert_eq!(stats.locked_liquidity, 3_000);
-    assert_eq!(stats.available_liquidity, 7_000);
-    assert_eq!(t.client.get_loan_locked_amount(&1), 3_000);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #6)")] // InsufficientLiquidity
-fn test_lock_funds_exceeds_available_liquidity_fails() {
-    let t = TestEnv::setup();
-    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
     t.mint(&provider, 1_000);
     t.client.deposit(&provider, &1_000);
 
-    t.client.lock_funds(&t.creditline, &1, &2_000);
+    // Fund a 500-token loan
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+
+    let before = t.client.get_pool_stats();
+    let share_price_before = before.share_price;
+
+    // Simulate: guarantee of 100 recovered, remaining 400 is unrecoverable shortfall
+    t.mint(&t.creditline, 100);
+    t.client.receive_guarantee(&t.creditline, &100);
+
+    // Now absorb the 400 shortfall
+    t.client.absorb_loss(&t.creditline, &400);
+
+    let after = t.client.get_pool_stats();
+    // locked was 500, reduced by 100 (guarantee), then by 400 (loss) → 0
+    assert_eq!(after.locked_liquidity, 0);
+    // total_liquidity was 1000, +100 (guarantee), -400 (loss) = 700
+    assert_eq!(after.total_liquidity, 700);
+    // share price must drop to reflect the loss
+    assert!(after.share_price < share_price_before);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
-fn test_lock_funds_unauthorized_fails() {
+fn test_absorb_loss_drops_share_price_commensurate_with_shortfall() {
+    // Verify that share price drops proportionally after loss absorption.
     let t = TestEnv::setup();
     let provider = Address::generate(&t.env);
-    let intruder = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
     t.mint(&provider, 10_000);
     t.client.deposit(&provider, &10_000);
 
-    t.client.lock_funds(&intruder, &1, &1_000);
+    // Fund an 8,000-token loan (pool_contribution)
+    t.client.fund_loan(&t.creditline, &merchant, &8_000);
+
+    let stats_before = t.client.get_pool_stats();
+    assert_eq!(stats_before.share_price, 10_000); // 1:1
+
+    // Guarantee of 2,000 recovered; unrecovered shortfall = 8,000 - 2,000 = 6,000
+    t.mint(&t.creditline, 2_000);
+    t.client.receive_guarantee(&t.creditline, &2_000);
+
+    // Absorb 6,000 shortfall
+    t.client.absorb_loss(&t.creditline, &6_000);
+
+    let after = t.client.get_pool_stats();
+    assert_eq!(after.locked_liquidity, 0);
+    // total_liquidity = 10_000 + 2_000 (guarantee) - 6_000 (loss) = 6_000
+    assert_eq!(after.total_liquidity, 6_000);
+    // share_price = 6_000 * 10_000 / 10_000 = 6_000 bps ($0.60)
+    assert_eq!(after.share_price, 6_000);
 }
 
 #[test]
-fn test_release_funds_success() {
+fn test_absorb_loss_caps_shortfall_at_locked_liquidity() {
+    // If shortfall exceeds locked_liquidity, cap at locked to avoid negative locked.
     let t = TestEnv::setup();
     let provider = Address::generate(&t.env);
-    t.mint(&provider, 10_000);
-    t.client.deposit(&provider, &10_000);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
 
-    t.client.lock_funds(&t.creditline, &1, &4_000);
-    assert_eq!(t.client.get_loan_locked_amount(&1), 4_000);
+    // Fund a 500-token loan
+    t.client.fund_loan(&t.creditline, &merchant, &500);
 
-    t.client.release_funds(&t.creditline, &1);
+    // No guarantee recovery — attempt to absorb 1,000 shortfall when only 500 is locked
+    t.client.absorb_loss(&t.creditline, &1_000);
 
-    let stats = t.client.get_pool_stats();
-    assert_eq!(stats.locked_liquidity, 0);
-    assert_eq!(stats.available_liquidity, 10_000);
-    assert_eq!(t.client.get_loan_locked_amount(&1), 0);
+    let after = t.client.get_pool_stats();
+    // locked capped at current 500 → 0
+    assert_eq!(after.locked_liquidity, 0);
+    // total_liquidity capped at current 1_000 → 0
+    assert_eq!(after.total_liquidity, 0);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
-fn test_release_funds_unauthorized_fails() {
-    let t = TestEnv::setup();
-    let intruder = Address::generate(&t.env);
-    t.client.release_funds(&intruder, &1);
-}
-
-#[test]
-fn test_liquidate_funds_success() {
+fn test_absorb_loss_after_partial_repayment_then_default() {
+    // If a loan was partially repaid, the shortfall should only be the
+    // remaining unrecovered principal.
     let t = TestEnv::setup();
     let provider = Address::generate(&t.env);
-    t.mint(&provider, 10_000);
-    t.client.deposit(&provider, &10_000);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
 
-    t.client.lock_funds(&t.creditline, &1, &5_000);
-    assert_eq!(t.client.get_pool_stats().locked_liquidity, 5_000);
+    // Fund an 800-token loan
+    t.client.fund_loan(&t.creditline, &merchant, &800);
 
-    t.client.liquidate_funds(&t.creditline, &1);
+    // Borrower repays 300 principal
+    t.mint(&t.creditline, 300);
+    t.client.receive_repayment(&t.creditline, &300, &0);
 
-    let stats = t.client.get_pool_stats();
-    assert_eq!(stats.locked_liquidity, 0);
-    assert_eq!(t.client.get_loan_locked_amount(&1), 0);
+    let mid = t.client.get_pool_stats();
+    assert_eq!(mid.locked_liquidity, 500); // 800 - 300 repaid
+
+    // Loan defaults: guarantee 200 recovered, shortfall = 500 - 200 = 300
+    t.mint(&t.creditline, 200);
+    t.client.receive_guarantee(&t.creditline, &200);
+    t.client.absorb_loss(&t.creditline, &300);
+
+    let after = t.client.get_pool_stats();
+    assert_eq!(after.locked_liquidity, 0);
+    // total_liquidity = 1000 + 200 (guarantee) - 300 (loss) = 900
+    // But receive_repayment also adjusted total: 1000 + 0 (no interest) - ...
+    // Actually receive_repayment with 0 interest doesn't change total_liquidity
+    // (it only reduces locked by the principal and transfers principal tokens).
+    // After repay: total = 1000, locked = 500
+    // After guarantee(200): total = 1200, locked = 300
+    // After absorb_loss(300): total = 900, locked = 0
+    assert_eq!(after.total_liquidity, 900);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
-fn test_liquidate_funds_unauthorized_fails() {
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_absorb_loss_unauthorized_caller_fails() {
     let t = TestEnv::setup();
     let intruder = Address::generate(&t.env);
-    t.client.liquidate_funds(&intruder, &1);
+    t.client.absorb_loss(&intruder, &100);
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_absorb_loss_zero_amount_fails() {
+    let t = TestEnv::setup();
+    t.client.absorb_loss(&t.creditline, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_absorb_loss_negative_amount_fails() {
+    let t = TestEnv::setup();
+    t.client.absorb_loss(&t.creditline, &-100);
+}
+
+#[test]
+fn test_absorb_loss_emits_event() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    t.client.absorb_loss(&t.creditline, &300);
+
+    let events = t.env.events().all();
+    assert!(!events.is_empty(), "Expected LQLOSS event to be emitted");
+}

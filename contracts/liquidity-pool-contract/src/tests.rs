@@ -105,6 +105,59 @@ fn test_initialize_twice_fails() {
     );
 }
 
+// ─── pause ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_pause_defaults_to_false() {
+    let t = TestEnv::setup();
+    let params_id = t.env.register(parameters_contract::ParametersContract, ());
+    let params = parameters_contract::ParametersContractClient::new(&t.env, &params_id);
+    params.initialize_defaults(&t.admin);
+    t.client.set_parameters_contract(&t.admin, &params_id);
+
+    assert!(!params.is_paused());
+}
+
+#[test]
+fn test_mutating_functions_fail_while_paused() {
+    let t = TestEnv::setup();
+    let params_id = t.env.register(parameters_contract::ParametersContract, ());
+    let params = parameters_contract::ParametersContractClient::new(&t.env, &params_id);
+    params.initialize_defaults(&t.admin);
+    t.client.set_parameters_contract(&t.admin, &params_id);
+
+    // Pause via params contract
+    params.set_paused(&t.admin, &true);
+
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+
+    // deposit should fail
+    assert_eq!(
+        t.client.try_deposit(&provider, &1_000),
+        Err(Ok(LiquidityPoolError::Paused))
+    );
+}
+
+#[test]
+fn test_read_only_functions_continue_while_paused() {
+    let t = TestEnv::setup();
+    let params_id = t.env.register(parameters_contract::ParametersContract, ());
+    let params = parameters_contract::ParametersContractClient::new(&t.env, &params_id);
+    params.initialize_defaults(&t.admin);
+    t.client.set_parameters_contract(&t.admin, &params_id);
+
+    // Pause
+    params.set_paused(&t.admin, &true);
+
+    // get_version should work
+    assert_eq!(t.client.get_version(), 1u32);
+
+    // get_pool_stats should work (read-only)
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.total_liquidity, 0);
+}
+
 // ─── deposit ──────────────────────────────────────────────────────────────────
 
 #[test]

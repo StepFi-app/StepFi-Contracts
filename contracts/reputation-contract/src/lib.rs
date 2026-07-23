@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, IntoVal, Symbol};
 
 // Module imports
 mod access;
@@ -40,6 +40,7 @@ impl ReputationContract {
     ) -> Result<(), ReputationError> {
         updater.require_auth();
         access::require_updater(&env, &updater);
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
 
@@ -70,6 +71,7 @@ impl ReputationContract {
     ) -> Result<(), ReputationError> {
         updater.require_auth();
         access::require_updater(&env, &updater);
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
 
@@ -91,6 +93,7 @@ impl ReputationContract {
     pub fn set_score(env: Env, updater: Address, user: Address, new_score: u32) {
         updater.require_auth();
         access::require_updater(&env, &updater);
+        Self::require_not_paused(&env);
 
         if new_score > types::MAX_SCORE {
             soroban_sdk::panic_with_error!(&env, ReputationError::OutOfBounds);
@@ -118,6 +121,7 @@ impl ReputationContract {
     ) -> Result<(), ReputationError> {
         updater.require_auth();
         access::require_updater(&env, &updater);
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
 
@@ -148,6 +152,7 @@ impl ReputationContract {
     ) -> Result<(), ReputationError> {
         updater.require_auth();
         access::require_updater(&env, &updater);
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
 
@@ -169,6 +174,7 @@ impl ReputationContract {
     pub fn set_updater(env: Env, admin: Address, updater: Address, allowed: bool) {
         admin.require_auth();
         access::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
 
@@ -186,6 +192,13 @@ impl ReputationContract {
 
     /// Set the admin address for this contract
     /// Requires authorization from current admin (or allows initial setup)
+    pub fn set_parameters_contract(env: Env, admin: Address, address: Address) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
+        storage::set_parameters_contract(&env, &address);
+    }
+
     pub fn set_admin(env: Env, new_admin: Address) {
         let old_admin_opt: Option<Address> = env.storage().instance().get(&storage::ADMIN_KEY);
 
@@ -193,6 +206,7 @@ impl ReputationContract {
             // Admin exists, require current admin authorization
             old_admin.require_auth();
             access::require_admin(&env, &old_admin);
+            Self::require_not_paused(&env);
 
             Self::enter_non_reentrant(&env);
 
@@ -213,6 +227,7 @@ impl ReputationContract {
         let admin = storage::get_admin(&env)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env);
 
         Self::enter_non_reentrant(&env);
         let old = storage::get_version(&env).unwrap_or(1u32);
@@ -224,6 +239,24 @@ impl ReputationContract {
     }
     pub fn get_admin(env: Env) -> Result<Address, ReputationError> {
         storage::get_admin(&env)
+    }
+
+    fn require_not_paused(env: &Env) {
+        let params_contract = match storage::get_parameters_contract(env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(env, err))
+        {
+            Some(address) => address,
+            None => return,
+        };
+
+        let paused: bool = env.invoke_contract(
+            &params_contract,
+            &Symbol::new(env, "is_paused"),
+            ().into_val(env),
+        );
+        if paused {
+            soroban_sdk::panic_with_error!(env, ReputationError::Paused);
+        }
     }
 
     fn enter_non_reentrant(env: &Env) {

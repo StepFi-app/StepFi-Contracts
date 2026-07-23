@@ -286,6 +286,53 @@ fn test_upgrade_via_proposal_increments_version() {
 }
 
 #[test]
+fn test_pause_defaults_to_false() {
+    let (_env, client, admin) = setup();
+    client.initialize_defaults(&admin);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_admin_can_pause() {
+    let (_env, client, admin) = setup();
+    client.initialize_defaults(&admin);
+    client.set_paused(&admin, &true);
+    assert!(client.is_paused());
+}
+
+#[test]
+fn test_admin_can_unpause() {
+    let (_env, client, admin) = setup();
+    client.initialize_defaults(&admin);
+    client.set_paused(&admin, &true);
+    assert!(client.is_paused());
+    client.set_paused(&admin, &false);
+    assert!(!client.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")] // NotAdmin
+fn test_unauthorized_caller_cannot_pause() {
+    let (env, client, admin) = setup();
+    client.initialize_defaults(&admin);
+    let intruder = Address::generate(&env);
+    client.set_paused(&intruder, &true);
+}
+
+#[test]
+fn test_set_paused_via_proposal() {
+    let (env, client, _admin, s1, s2, _s3) = setup_multisig();
+
+    assert!(!client.is_paused());
+
+    let id = client.propose(&s1, &ProposalAction::SetPaused(true));
+    client.approve(&s2, &id);
+    client.execute(&id);
+
+    assert!(client.is_paused());
+}
+
+#[test]
 fn test_three_of_three_with_full_committee_approval() {
     let (env, client, admin) = setup();
     client.initialize_defaults(&admin);

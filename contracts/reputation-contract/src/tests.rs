@@ -52,6 +52,73 @@ fn it_gets_admin() {
     assert_eq!(retrieved, admin);
 }
 
+// ─── pause ─────────────────────────────────────────────────────────────────────
+
+struct PauseTestCtx {
+    env: Env,
+    client: ReputationContractClient<'static>,
+    admin: Address,
+    params: parameters_contract::ParametersContractClient<'static>,
+}
+
+fn setup_pause() -> PauseTestCtx {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+    let client: ReputationContractClient<'static> = unsafe { core::mem::transmute(client) };
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+    client.set_updater(&admin, &admin, &true);
+
+    let params_id = env.register(parameters_contract::ParametersContract, ());
+    let params = parameters_contract::ParametersContractClient::new(&env, &params_id);
+    let params: parameters_contract::ParametersContractClient<'static> =
+        unsafe { core::mem::transmute(params) };
+    params.initialize_defaults(&admin);
+    client.set_parameters_contract(&admin, &params_id);
+
+    PauseTestCtx {
+        env,
+        client,
+        admin,
+        params,
+    }
+}
+
+#[test]
+fn test_mutating_functions_fail_while_paused() {
+    let ctx = setup_pause();
+
+    // Pause
+    ctx.params.set_paused(&ctx.admin, &true);
+
+    let user = Address::generate(&ctx.env);
+
+    // increase_score should fail
+    assert_eq!(
+        ctx.client
+            .try_increase_score(&ctx.admin, &user, &10u32),
+        Err(Ok(ReputationError::Paused))
+    );
+}
+
+#[test]
+fn test_read_only_functions_continue_while_paused() {
+    let ctx = setup_pause();
+
+    // Pause
+    ctx.params.set_paused(&ctx.admin, &true);
+
+    // get_score should work (read-only)
+    let user = Address::generate(&ctx.env);
+    assert_eq!(ctx.client.get_score(&user), 0u32);
+
+    // get_version should work
+    assert_eq!(ctx.client.get_version(), 1u32);
+}
+
 /// Test: Assigns updater permissions
 #[test]
 fn it_sets_updater() {

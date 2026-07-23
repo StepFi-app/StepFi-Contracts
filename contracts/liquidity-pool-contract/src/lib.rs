@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env, IntoVal, Symbol};
 
 mod errors;
 mod events;
@@ -50,25 +50,36 @@ impl LiquidityPoolContract {
     pub fn set_creditline(env: Env, admin: Address, creditline: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
         storage::set_creditline(&env, &creditline);
     }
 
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
         storage::set_treasury(&env, &treasury);
     }
 
     pub fn set_merchant_fund(env: Env, admin: Address, merchant_fund: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
         storage::set_merchant_fund(&env, &merchant_fund);
+    }
+
+    pub fn set_parameters_contract(env: Env, admin: Address, address: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        Self::require_not_paused(&env);
+        storage::set_parameters_contract(&env, &address);
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
         let old_admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         old_admin.require_auth();
         Self::require_admin(&env, &old_admin);
+        Self::require_not_paused(&env);
         storage::set_admin(&env, &new_admin);
     }
 
@@ -76,6 +87,7 @@ impl LiquidityPoolContract {
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env);
         // bump and persist version
         let old_version = storage::get_version(&env).unwrap_or(1u32);
         let new_version = old_version.checked_add(1).unwrap_or(old_version);
@@ -106,6 +118,7 @@ impl LiquidityPoolContract {
     /// Returns the number of shares issued.
     pub fn deposit(env: Env, provider: Address, amount: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
+        Self::require_not_paused(&env);
 
         if amount < types::MIN_AMOUNT {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -160,6 +173,7 @@ impl LiquidityPoolContract {
     /// Returns the number of tokens returned.
     pub fn withdraw(env: Env, provider: Address, shares: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
+        Self::require_not_paused(&env);
 
         if shares < types::MIN_AMOUNT {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -225,6 +239,7 @@ impl LiquidityPoolContract {
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
         Self::require_creditline(&env, &creditline);
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -267,6 +282,7 @@ impl LiquidityPoolContract {
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
         Self::require_creditline(&env, &creditline);
+        Self::require_not_paused(&env);
 
         if principal < 0 || interest < 0 {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -309,6 +325,7 @@ impl LiquidityPoolContract {
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
         Self::require_creditline(&env, &creditline);
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -349,6 +366,7 @@ impl LiquidityPoolContract {
     /// This function is called internally by `receive_repayment`, but it is also
     /// `pub` so that the CreditLine (or admin, in edge-case) can call it directly.
     pub fn distribute_interest(env: Env, interest_amount: i128) -> Result<(), LiquidityPoolError> {
+        Self::require_not_paused(&env);
         Self::enter_non_reentrant(&env);
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
@@ -367,6 +385,7 @@ impl LiquidityPoolContract {
     ///   - 10 % → Protocol Treasury
     ///   -  5 % → Merchant Incentive Fund
     pub fn accumulate_interest(env: Env, interest_amount: i128) -> Result<(), LiquidityPoolError> {
+        Self::require_not_paused(&env);
         Self::enter_non_reentrant(&env);
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
@@ -514,6 +533,24 @@ impl LiquidityPoolContract {
         let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));
         if admin != *caller {
             panic_with_error!(env, LiquidityPoolError::NotAdmin);
+        }
+    }
+
+    fn require_not_paused(env: &Env) {
+        match storage::get_parameters_contract(env)
+            .unwrap_or_else(|err| panic_with_error!(env, err))
+        {
+            Some(address) => {
+                let paused: bool = env.invoke_contract(
+                    &address,
+                    &Symbol::new(env, "is_paused"),
+                    ().into_val(env),
+                );
+                if paused {
+                    panic_with_error!(env, LiquidityPoolError::Paused);
+                }
+            }
+            None => (),
         }
     }
 

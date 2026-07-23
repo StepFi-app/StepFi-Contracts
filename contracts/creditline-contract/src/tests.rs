@@ -3440,6 +3440,112 @@ fn test_repay_installment_zero_amount_rejected() {
     t.client.repay_installment(&user, &loan_id, &0, &0);
 }
 
+// ─── pause ─────────────────────────────────────────────────────────────────────
+
+struct PauseCtx {
+    env: Env,
+    client: CreditLineContractClient<'static>,
+    admin: Address,
+    parameters_id: Address,
+    lp_id: Address,
+}
+
+impl PauseCtx {
+    fn setup() -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(CreditLineContract, ());
+        let client = CreditLineContractClient::new(&env, &contract_id);
+        let client: CreditLineContractClient<'static> = unsafe { core::mem::transmute(client) };
+
+        let admin = Address::generate(&env);
+        let rep_id = env.register(MockReputation, ());
+        let vendor_registry_id = env.register(VendorRegistryContract, ());
+        use soroban_sdk::{IntoVal, Symbol};
+        let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+            &vendor_registry_id,
+            &Symbol::new(&env, "initialize"),
+            (&admin,).into_val(&env),
+        );
+        let lp_id = env.register(MockLiquidityPool, ());
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+
+        let parameters_id = env.register(ParametersContract, ());
+        let params_client = ParametersContractClient::new(&env, &parameters_id);
+        params_client.initialize_defaults(&admin);
+        client.set_parameters_contract(&admin, &parameters_id);
+
+        PauseCtx {
+            env,
+            client,
+            admin,
+            parameters_id,
+            lp_id,
+        }
+    }
+}
+
+#[test]
+fn test_mutating_functions_fail_while_paused() {
+    let ctx = PauseCtx::setup();
+    let params = ParametersContractClient::new(&ctx.env, &ctx.parameters_id);
+
+    // Pause
+    params.set_paused(&ctx.admin, &true);
+
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+
+    // create_loan should fail
+    let due = ctx.env.ledger().timestamp() + 10_000;
+    let schedule = ctx.single_installment_for(due);
+    assert_eq!(
+        ctx.client.try_create_loan(
+            &user,
+            &vendor,
+            &1_000,
+            &200,
+            &schedule,
+            &LoanType::Standard,
+        ),
+        Err(Ok(CreditLineError::Paused))
+    );
+}
+
+#[test]
+fn test_read_only_functions_continue_while_paused() {
+    let ctx = PauseCtx::setup();
+    let params = ParametersContractClient::new(&ctx.env, &ctx.parameters_id);
+
+    // Pause
+    params.set_paused(&ctx.admin, &true);
+
+    // get_version should work
+    assert_eq!(ctx.client.get_version(), 1u32);
+
+    // get_admin should work
+    assert_eq!(ctx.client.get_admin(), ctx.admin);
+}
+
+// Helper for the PauseCtx since we can't call TestCtx methods directly
+impl PauseCtx {
+    fn single_installment_for(&self, due_date: u64) -> soroban_sdk::Vec<RepaymentInstallment> {
+        let mut s = soroban_sdk::Vec::new(&self.env);
+        s.push_back(RepaymentInstallment {
+            amount: 1000,
+            due_date,
+            paid: false,
+            paid_at: 0,
+        });
+        s
+    }
+}
+
 #[test]
 fn test_safe_math_boundaries() {
     use crate::safe_math;

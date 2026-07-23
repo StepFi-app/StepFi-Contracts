@@ -18,6 +18,7 @@ soroban-sdk = "22.0.0"
 
 [dev-dependencies]
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+parameters-contract = { path = "../parameters-contract" }
 # OpenZeppelin Testing Helpers (optional)
 # soroban-test-helpers = { git = "https://github.com/OpenZeppelin/soroban-helpers", branch = "main" }
 

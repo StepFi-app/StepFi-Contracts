@@ -54,6 +54,7 @@ pub enum ProposalAction {
     SetAdmin(Address),
     Upgrade(BytesN<32>),
     UpdateSigners(MultisigConfig),
+    SetPaused(bool),
 }
 
 #[contracttype]

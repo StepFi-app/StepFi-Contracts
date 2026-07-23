@@ -72,6 +72,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env)?;
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         Self::validate_vendor(&env, &vendor)?;
@@ -124,6 +125,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env)?;
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         let score = Self::validate_reputation(&env, &user)?;
@@ -182,6 +184,7 @@ impl CreditLineContract {
         let old_admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         old_admin.require_auth();
         access::require_admin(&env, &old_admin);
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         storage::set_admin(&env, &new_admin);
     }
@@ -190,6 +193,7 @@ impl CreditLineContract {
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         // bump stored version and emit event
         let old_version = storage::get_version(&env).unwrap_or(1u32);
@@ -206,24 +210,28 @@ impl CreditLineContract {
     pub fn set_reputation_contract(env: Env, admin: Address, address: Address) {
         admin.require_auth();
         access::require_admin(&env, &admin);
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_reputation_contract(&env, &address);
     }
 
     pub fn set_vendor_registry(env: Env, admin: Address, address: Address) {
         admin.require_auth();
         access::require_admin(&env, &admin);
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_vendor_registry(&env, &address);
     }
 
     pub fn set_liquidity_pool(env: Env, admin: Address, address: Address) {
         admin.require_auth();
         access::require_admin(&env, &admin);
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_liquidity_pool(&env, &address);
     }
 
     pub fn set_parameters_contract(env: Env, admin: Address, address: Address) {
         admin.require_auth();
         access::require_admin(&env, &admin);
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_parameters_contract(&env, &address);
     }
 
@@ -484,6 +492,7 @@ impl CreditLineContract {
     }
 
     pub fn mark_defaulted(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env)?;
         let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -561,6 +570,7 @@ impl CreditLineContract {
         // 1. Admin auth - must be first
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         // 2. Load loan — panic if not found
         let mut loan =
@@ -595,6 +605,7 @@ impl CreditLineContract {
 
     pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {
         caller.require_auth();
+        Self::require_not_paused(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
 
         let mut loan =
             storage::read_loan(&env, loan_id).unwrap_or_else(|err| panic_with_error!(&env, err));
@@ -630,6 +641,7 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+        Self::require_not_paused(&env)?;
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -760,6 +772,7 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+        Self::require_not_paused(&env)?;
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -896,6 +909,7 @@ impl CreditLineContract {
     /// `LOANLTFE` event when fees are accrued; is a no-op when no full day has
     /// elapsed since the last accrual or when no installment is overdue.
     pub fn apply_late_fees(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env)?;
         let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -935,6 +949,25 @@ impl CreditLineContract {
             &Symbol::new(env, "increase_score"),
             (updater, borrower, score_increase).into_val(env),
         );
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), CreditLineError> {
+        match storage::get_parameters_contract(env)
+            .unwrap_or_else(|err| panic_with_error!(env, err))
+        {
+            Some(address) => {
+                let paused: bool = env.invoke_contract(
+                    &address,
+                    &Symbol::new(env, "is_paused"),
+                    ().into_val(env),
+                );
+                if paused {
+                    return Err(CreditLineError::Paused);
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 
     fn get_protocol_parameters(env: &Env) -> ProtocolParameters {

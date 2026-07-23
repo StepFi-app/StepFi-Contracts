@@ -19,6 +19,7 @@ pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
 // Version key (instance storage)
 pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
+pub const PARAMETERS_KEY: Symbol = symbol_short!("PARAMS");
 
 // --- Admin ---
 
@@ -156,4 +157,12 @@ pub fn get_version(env: &Env) -> Result<u32, LiquidityPoolError> {
 
 pub fn set_version(env: &Env, v: u32) {
     env.storage().instance().set(&VERSION_KEY, &v);
+}
+
+pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, LiquidityPoolError> {
+    Ok(env.storage().instance().get(&PARAMETERS_KEY))
+}
+
+pub fn set_parameters_contract(env: &Env, address: &Address) {
+    env.storage().instance().set(&PARAMETERS_KEY, address);
 }

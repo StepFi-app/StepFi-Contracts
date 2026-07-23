@@ -21,4 +21,5 @@ pub enum ParametersError {
     ProposalAlreadyExecuted = 15,
     DuplicateSignature = 16,
     ThresholdNotMet = 17,
+    Paused = 18,
 }

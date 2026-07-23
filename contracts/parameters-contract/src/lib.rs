@@ -139,6 +139,7 @@ impl ParametersContract {
             ProposalAction::SetAdmin(a) => Self::do_set_admin(&env, &a),
             ProposalAction::Upgrade(h) => Self::do_upgrade(&env, h),
             ProposalAction::UpdateSigners(c) => Self::do_update_signers(&env, &c),
+            ProposalAction::SetPaused(paused) => storage::set_paused(&env, paused),
         }
 
         proposal.executed = true;
@@ -162,6 +163,16 @@ impl ParametersContract {
 
     pub fn get_parameters(env: Env) -> Result<ProtocolParameters, ParametersError> {
         storage::get_parameters(&env)
+    }
+
+    pub fn set_paused(env: Env, admin: Address, paused: bool) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        storage::set_paused(&env, paused);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
     }
 
 

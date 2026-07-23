@@ -8,6 +8,7 @@ pub const UPDATERS_MAP: Symbol = symbol_short!("UPDATERS");
 pub const SCORES_MAP: Symbol = symbol_short!("SCORES");
 pub const REENTRANCY_LOCK: Symbol = symbol_short!("LOCKED");
 pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
+pub const PARAMETERS_KEY: Symbol = symbol_short!("PARAMS");
 
 /// Get the admin address from storage
 pub fn get_admin(env: &Env) -> Result<Address, ReputationError> {
@@ -91,4 +92,12 @@ pub fn get_version(env: &Env) -> Result<u32, ReputationError> {
 
 pub fn set_version(env: &Env, v: u32) {
     env.storage().instance().set(&VERSION_KEY, &v);
+}
+
+pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, ReputationError> {
+    Ok(env.storage().instance().get(&PARAMETERS_KEY))
+}
+
+pub fn set_parameters_contract(env: &Env, address: &Address) {
+    env.storage().instance().set(&PARAMETERS_KEY, address);
 }

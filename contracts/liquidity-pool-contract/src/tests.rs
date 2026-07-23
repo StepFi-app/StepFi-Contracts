@@ -2437,3 +2437,95 @@ fn test_loan_funding_and_guarantee_recovery_cycle() {
     assert_eq!(stats_final.locked_liquidity, 2_500);
     assert_eq!(stats_final.available_liquidity, 3_000);
 }
+
+// ─── Atomic Liquidity Locking Tests ───────────────────────────────────────────
+
+#[test]
+fn test_lock_funds_success() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.lock_funds(&t.creditline, &1, &3_000);
+
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.locked_liquidity, 3_000);
+    assert_eq!(stats.available_liquidity, 7_000);
+    assert_eq!(t.client.get_loan_locked_amount(&1), 3_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // InsufficientLiquidity
+fn test_lock_funds_exceeds_available_liquidity_fails() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    t.client.lock_funds(&t.creditline, &1, &2_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
+fn test_lock_funds_unauthorized_fails() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let intruder = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.lock_funds(&intruder, &1, &1_000);
+}
+
+#[test]
+fn test_release_funds_success() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.lock_funds(&t.creditline, &1, &4_000);
+    assert_eq!(t.client.get_loan_locked_amount(&1), 4_000);
+
+    t.client.release_funds(&t.creditline, &1);
+
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.locked_liquidity, 0);
+    assert_eq!(stats.available_liquidity, 10_000);
+    assert_eq!(t.client.get_loan_locked_amount(&1), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
+fn test_release_funds_unauthorized_fails() {
+    let t = TestEnv::setup();
+    let intruder = Address::generate(&t.env);
+    t.client.release_funds(&intruder, &1);
+}
+
+#[test]
+fn test_liquidate_funds_success() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.lock_funds(&t.creditline, &1, &5_000);
+    assert_eq!(t.client.get_pool_stats().locked_liquidity, 5_000);
+
+    t.client.liquidate_funds(&t.creditline, &1);
+
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.locked_liquidity, 0);
+    assert_eq!(t.client.get_loan_locked_amount(&1), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")] // NotCreditLine
+fn test_liquidate_funds_unauthorized_fails() {
+    let t = TestEnv::setup();
+    let intruder = Address::generate(&t.env);
+    t.client.liquidate_funds(&intruder, &1);
+}
+

@@ -541,6 +541,7 @@ impl CreditLineContract {
 
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
         lp_client.receive_guarantee(&env.current_contract_address(), &loan.guarantee_amount);
+        lp_client.liquidate_funds(&env.current_contract_address(), &loan_id);
 
         events::emit_loan_defaulted(
             &env,
@@ -592,10 +593,20 @@ impl CreditLineContract {
         // 4. Transition to Active
         loan.status = LoanStatus::Active;
 
-        // 5. Write back with TTL extension
+        // 5. Lock required liquidity in the pool atomically
+        let pool_contribution = safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let liquidity_pool = storage::get_liquidity_pool(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+            .ok_or(CreditLineError::InsufficientLiquidity)
+            .unwrap();
+        let lp_client = LiquidityPoolContractClient::new(&env, &liquidity_pool);
+        lp_client.lock_funds(&env.current_contract_address(), &loan_id, &pool_contribution);
+
+        // 6. Persist loan with TTL extension
         storage::write_loan(&env, &loan);
 
-        // 6. Emit event
+        // 7. Emit event
         events::emit_loan_approved(&env, loan_id);
 
         loan
@@ -708,6 +719,7 @@ impl CreditLineContract {
                 &borrower,
                 &loan.guarantee_amount,
             );
+            lp_client.release_funds(&env.current_contract_address(), &loan_id);
         }
 
         events::emit_loan_repaid(
@@ -838,12 +850,9 @@ impl CreditLineContract {
             &interest_fee_late,
         );
 
+        // If fully repaid, release locked funds back to the pool
         if is_fully_repaid {
-            token_client.transfer(
-                &env.current_contract_address(),
-                &borrower,
-                &loan.guarantee_amount,
-            );
+            lp_client.release_funds(&env.current_contract_address(), &loan_id);
         }
 
         events::emit_installment_paid(&env, loan_id, installment_index, amount, new_balance);

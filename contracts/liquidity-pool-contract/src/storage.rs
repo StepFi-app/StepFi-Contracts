@@ -137,6 +137,31 @@ pub fn set_lp_shares(env: &Env, provider: &Address, shares: i128) {
         .persistent()
         .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
+// --- Loan Locked Amounts (persistent per-loan) ---
+
+// Prefix for loan locked amount storage keys
+pub const LOAN_LOCKED_PREFIX: Symbol = symbol_short!("LOANLCK");
+
+/// Retrieve the locked amount for a specific loan.
+pub fn get_loan_locked_amount(env: &Env, loan_id: u64) -> Result<i128, LiquidityPoolError> {
+    let key = (LOAN_LOCKED_PREFIX, loan_id);
+    Ok(env.storage().persistent().get(&key).unwrap_or(0))
+}
+
+/// Set the locked amount for a specific loan.
+pub fn set_loan_locked_amount(env: &Env, loan_id: u64, amount: i128) {
+    let key = (LOAN_LOCKED_PREFIX, loan_id);
+    env.storage().persistent().set(&key, &amount);
+    // Extend TTL to keep this mapping alive
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+/// Remove the locked amount entry for a loan.
+pub fn remove_loan_locked_amount(env: &Env, loan_id: u64) {
+    let key = (LOAN_LOCKED_PREFIX, loan_id);
+    env.storage().persistent().remove(&key);
+}
+
 
 pub fn is_reentrancy_locked(env: &Env) -> Result<bool, LiquidityPoolError> {
     Ok(env

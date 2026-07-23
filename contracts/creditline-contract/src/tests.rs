@@ -70,6 +70,19 @@ impl MockLiquidityPool {
         }
     }
 
+    pub fn lock_funds(env: Env, _creditline: Address, _loan_id: u64, amount: i128) {
+        env.storage().instance().set(&symbol_short!("LOCKED"), &true);
+        env.storage().instance().set(&symbol_short!("LKAMT"), &amount);
+    }
+
+    pub fn release_funds(env: Env, _creditline: Address, _loan_id: u64) {
+        env.storage().instance().set(&symbol_short!("RLSD"), &true);
+    }
+
+    pub fn liquidate_funds(env: Env, _creditline: Address, _loan_id: u64) {
+        env.storage().instance().set(&symbol_short!("LIQD"), &true);
+    }
+
     pub fn fund_loan(env: Env, _creditline: Address, _vendor: Address, amount: i128) {
         env.storage().instance().set(&symbol_short!("FUND"), &true);
         env.storage().instance().set(&symbol_short!("FNAMT"), &amount);
@@ -122,6 +135,14 @@ mod mock_empty_pool {
                 share_price: 10_000,
             }
         }
+
+        pub fn lock_funds(_env: Env, _creditline: Address, _loan_id: u64, _amount: i128) {
+            panic!("Insufficient liquidity");
+        }
+
+        pub fn release_funds(_env: Env, _creditline: Address, _loan_id: u64) {}
+
+        pub fn liquidate_funds(_env: Env, _creditline: Address, _loan_id: u64) {}
 
         pub fn fund_loan(_env: Env, _creditline: Address, _vendor: Address, _amount: i128) {}
 
@@ -3667,4 +3688,35 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::sub_i128(min, 1), Err(CreditLineError::Underflow));
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
+}
+
+#[test]
+fn test_approve_loan_locks_liquidity_atomically() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let loan_before = t.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    t.client.approve_loan(&loan_id);
+
+    let loan_after = t.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Active);
+}
+
+#[test]
+#[should_panic]
+fn test_approve_loan_reverts_if_liquidity_pool_lock_fails() {
+    let t = TestCtx::setup();
+    let empty_lp_id = t.env.register(MockLiquidityPoolEmpty, ());
+    t.client.set_liquidity_pool(&t.admin, &empty_lp_id);
+
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    // approve_loan will fail when lock_funds panics on MockLiquidityPoolEmpty
+    t.client.approve_loan(&loan_id);
 }

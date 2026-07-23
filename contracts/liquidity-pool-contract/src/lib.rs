@@ -92,6 +92,10 @@ impl LiquidityPoolContract {
         storage::get_version(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
+    pub fn get_loan_locked_amount(env: Env, loan_id: u64) -> i128 {
+        storage::get_loan_locked_amount(&env, loan_id).unwrap_or(0)
+    }
+
     // -------------------------------------------------------------------------
     // LP Operations
     // -------------------------------------------------------------------------
@@ -255,6 +259,87 @@ impl LiquidityPoolContract {
         Ok(())
     }
 
+    /// Atomically lock liquidity for a loan.
+    /// Called by the CreditLine contract during loan approval.
+    pub fn lock_funds(
+        env: Env,
+        creditline: Address,
+        loan_id: u64,
+        amount: i128,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
+        if amount <= 0 {
+            return Err(LiquidityPoolError::InvalidAmount);
+        }
+
+        // Ensure sufficient available liquidity
+        let total_liquidity = storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let locked_liquidity = storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let available = safe_math::sub_i128(total_liquidity, locked_liquidity)?;
+        if amount > available {
+            return Err(LiquidityPoolError::InsufficientLiquidity);
+        }
+
+        // Update locked liquidity and record per-loan amount
+        let new_locked = safe_math::add_i128(locked_liquidity, amount)?;
+        storage::set_locked_liquidity(&env, new_locked);
+        storage::set_loan_locked_amount(&env, loan_id, amount);
+        Ok(())
+    }
+
+    /// Release locked funds back to the pool after full repayment.
+    pub fn release_funds(
+        env: Env,
+        creditline: Address,
+        loan_id: u64,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
+        // Retrieve locked amount for loan
+        let locked_amount = storage::get_loan_locked_amount(&env, loan_id)?;
+        if locked_amount <= 0 {
+            // nothing to release
+            return Ok(());
+        }
+
+        // Decrease locked liquidity (restores available liquidity)
+        let locked_liquidity = storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let new_locked = safe_math::sub_i128(locked_liquidity, locked_amount)?;
+        storage::set_locked_liquidity(&env, new_locked);
+
+        // Remove mapping
+        storage::remove_loan_locked_amount(&env, loan_id);
+        Ok(())
+    }
+
+    /// Liquidate locked funds on default.
+    pub fn liquidate_funds(
+        env: Env,
+        creditline: Address,
+        loan_id: u64,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
+        let locked_amount = storage::get_loan_locked_amount(&env, loan_id)?;
+        if locked_amount <= 0 {
+            return Ok(());
+        }
+
+        // Reduce locked liquidity only; loss absorbed by pool (total liquidity unchanged)
+        let locked_liquidity = storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let new_locked = safe_math::sub_i128(locked_liquidity, locked_amount)?;
+        storage::set_locked_liquidity(&env, new_locked);
+
+        // Remove mapping
+        storage::remove_loan_locked_amount(&env, loan_id);
+        Ok(())
+    }
+
+    /// Receive a loan repayment (principal + interest) from CreditLine.
     /// Receive a loan repayment (principal + interest) from CreditLine.
     ///
     /// `principal` reduces locked_liquidity (loan is repaid).
@@ -483,10 +568,12 @@ impl LiquidityPoolContract {
 
     /// Calculate how many tokens `shares` are worth at the current share price.
     pub fn calculate_withdrawal(env: Env, shares: i128) -> i128 {
-        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
-        if shares == 0 {
+        let total_shares = storage::get_total_shares(&env).unwrap_or(0);
+        let total_liquidity = storage::get_total_liquidity(&env).unwrap_or(0);
+        if shares == 0 || total_shares == 0 || total_liquidity == 0 {
             return 0;
         }
+        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         safe_math::div_i128(
             safe_math::mul_i128(shares, share_price).unwrap_or(0),
             types::SHARE_PRICE_PRECISION,

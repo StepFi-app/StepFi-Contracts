@@ -295,10 +295,10 @@ impl LiquidityPoolContract {
         }
         Self::enter_non_reentrant(&env);
 
-        // Decrease locked liquidity by the principal
+        // Decrease locked liquidity by the principal (capped at 0)
         let locked =
             storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
-        let new_locked = safe_math::sub_i128(locked, principal)?;
+        let new_locked = 0_i128.max(safe_math::sub_i128(locked, principal)?);
         storage::set_locked_liquidity(&env, new_locked);
 
         // Pull funds from CreditLine after accounting changes.
@@ -351,6 +351,44 @@ impl LiquidityPoolContract {
         token_client.transfer(&creditline, &env.current_contract_address(), &amount);
 
         events::emit_guarantee_received(&env, &creditline, amount);
+        Self::exit_non_reentrant(&env);
+        Ok(())
+    }
+
+    /// Absorb an unrecovered principal shortfall from a defaulted loan.
+    /// Reduces both `locked_liquidity` and `total_liquidity` so that
+    /// `get_share_price()` immediately reflects the realized loss.
+    /// Only the registered CreditLine contract may call this.
+    pub fn absorb_loss(
+        env: Env,
+        creditline: Address,
+        principal_shortfall: i128,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
+        if principal_shortfall <= 0 {
+            return Err(LiquidityPoolError::InvalidAmount);
+        }
+
+        Self::enter_non_reentrant(&env);
+
+        let locked =
+            storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // Cap reductions at current values to prevent negative accounting.
+        let locked_reduction = principal_shortfall.min(locked);
+        let total_reduction = principal_shortfall.min(total_liquidity);
+
+        let new_locked = safe_math::sub_i128(locked, locked_reduction)?;
+        storage::set_locked_liquidity(&env, new_locked);
+
+        let new_total = safe_math::sub_i128(total_liquidity, total_reduction)?;
+        storage::set_total_liquidity(&env, new_total);
+
+        events::emit_loss_absorbed(&env, &creditline, principal_shortfall);
         Self::exit_non_reentrant(&env);
         Ok(())
     }

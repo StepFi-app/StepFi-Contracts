@@ -29,7 +29,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'contracts/**/*.rs', 'contracts/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       # creditline-contract embeds the four dependency WASMs via
       # soroban_sdk::contractimport!, so those WASMs must exist before

@@ -16,6 +16,15 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Issue #58 — Principal-Interest-Fee Repayment Waterfall
+- Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
+- Fixed `repay_loan()` to use the corrected waterfall order (was principal-first, now late-fees-first)
+- Rewrote `repay_installment()` to: accrue late fees, apply waterfall, transfer tokens, call pool's `receive_repayment()`, return guarantee on full repayment, update reputation
+- Each `*_outstanding` bucket decremented correctly per payment
+- `remaining_balance == sum(all outstanding buckets)` invariant asserted in tests
+- Added 8 new tests: waterfall order verification, bucket invariant for both repay_loan and repay_installment, partial/full bucket decrementation, full repayment via repay_installment, active debt tracking
+- Updated `test_repay_loan_auto_accrues_late_fees` for new waterfall behavior (late fees paid first, not last)
+
 ### Issue #7 — Vendor Approval Flow
 - Added `VendorStatus` enum (`Pending`, `Approved`, `Suspended`, `Rejected`) to `types.rs`
 - Replaced `active: bool` with `status: VendorStatus` in `VendorInfo`
@@ -94,7 +103,15 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## In Progress
 
-- None currently.
+### Issue #59 — Socialize Default Losses to Pool Share Price
+- Added `absorb_loss(creditline, principal_shortfall)` entrypoint to `liquidity-pool-contract` restricted to the registered CreditLine
+- Reduces both `locked_liquidity` and `total_liquidity` by the unrecovered principal, with independent caps to prevent negative accounting
+- Added `LQLOSS` event (`emit_loss_absorbed`) to liquidity-pool events
+- Updated `mark_defaulted()` to compute `principal_shortfall = principal_outstanding - guarantee_amount` and call `absorb_loss` after `receive_guarantee`
+- Added 8 LP pool tests: basic absorption, share price drop, capping, partial repayment flow, unauthorized caller rejection, zero/negative amount rejection, event emission
+- Added 4 creditline tests: absorb_loss called on default, zero-shortfall skip, partial repayment shortfall, end-to-end share price impact with real LP contract
+- Updated MockLiquidityPool and MockLiquidityPoolEmpty with `absorb_loss` stub for test compatibility
+- Fixed: `IntoVal` import moved before first usage in `test_mark_defaulted_loss_absorption_share_price_impact`
 
 ## Recently Fixed
 

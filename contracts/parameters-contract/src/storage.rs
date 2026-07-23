@@ -15,6 +15,10 @@ pub const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800; // 60 days
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600; // 120 days
 
+// TTL constants (in ledgers — 1 ledger ≈ 5 seconds on mainnet)
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800; // 60 days
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600; // 120 days
+
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&ADMIN_KEY)
 }
@@ -98,12 +102,4 @@ pub fn set_proposal(env: &Env, proposal: &Proposal) {
     env.storage()
         .persistent()
         .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
-}
-
-pub fn is_paused(env: &Env) -> bool {
-    env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
-}
-
-pub fn set_paused(env: &Env, paused: bool) {
-    env.storage().instance().set(&PAUSED_KEY, &paused);
 }

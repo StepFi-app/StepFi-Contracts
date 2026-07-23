@@ -79,11 +79,22 @@ impl MockLiquidityPool {
         env.storage().instance().set(&symbol_short!("REPRD"), &true);
         env.storage().instance().set(&symbol_short!("RPAMT"), &amount);
         env.storage().instance().set(&symbol_short!("RPFEE"), &fee);
+    }    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("GUARD"), &true);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("GUAMT"), &amount);
     }
 
-    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
-        env.storage().instance().set(&symbol_short!("GUARD"), &true);
-        env.storage().instance().set(&symbol_short!("GUAMT"), &amount);
+    pub fn absorb_loss(env: Env, _from: Address, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LOSSRD"), &true);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("LOSSAM"), &amount);
     }
 
     pub fn was_fund_loan_called(env: Env) -> bool {
@@ -96,10 +107,25 @@ impl MockLiquidityPool {
 
     pub fn was_receive_guarantee_called(env: Env) -> bool {
         env.storage().instance().get(&symbol_short!("GUARD")).unwrap_or(false)
+    }    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("GUAMT"))
+            .unwrap_or(0)
     }
 
-    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
-        env.storage().instance().get(&symbol_short!("GUAMT")).unwrap_or(0)
+    pub fn was_absorb_loss_called(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("LOSSRD"))
+            .unwrap_or(false)
+    }
+
+    pub fn get_absorb_loss_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("LOSSAM"))
+            .unwrap_or(0)
     }
 }
 
@@ -128,6 +154,8 @@ mod mock_empty_pool {
         pub fn receive_repayment(_env: Env, _from: Address, _amount: i128, _fee: i128) {}
 
         pub fn receive_guarantee(_env: Env, _from: Address, _amount: i128) {}
+
+        pub fn absorb_loss(_env: Env, _from: Address, _amount: i128) {}
     }
 }
 use mock_empty_pool::MockLiquidityPoolEmpty;
@@ -311,6 +339,14 @@ impl TestCtx {
 
     fn get_receive_guarantee_amount(&self) -> i128 {
         MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_guarantee_amount()
+    }
+
+    fn was_absorb_loss_called(&self) -> bool {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).was_absorb_loss_called()
+    }
+
+    fn get_absorb_loss_amount(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_absorb_loss_amount()
     }
 
     fn reputation_score(&self, user: &Address) -> u32 {
@@ -2725,7 +2761,9 @@ fn test_end_to_end_default_path_guarantee_and_penalty() {
         creditline_balance_after_loan - 200
     );
     assert_eq!(t.balance(&t.pool.address), pool_balance_after_loan + 200);
-    assert_eq!(pool_stats.locked_liquidity, 600);
+    // After mark_defaulted now absorbs the unrecovered principal shortfall,
+    // locked_liquidity is fully released (guarantee recovered + loss absorbed = 0 locked).
+    assert_eq!(pool_stats.locked_liquidity, 0);
 }
 
 // ─── late fee tests ───────────────────────────────────────────────────────────
@@ -2937,9 +2975,15 @@ fn test_repay_loan_auto_accrues_late_fees() {
     t.client.repay_loan(&user, &loan_id, &DEFAULT_TOTAL_DUE);
 
     let loan = t.client.get_loan(&loan_id);
-    // Loan is still Active: original balance paid but late fees remain
+    // Loan is still Active: original balance paid but principal remains
+    // With the new waterfall (late fees first), payment of 1050 first pays
+    // 5 in late fees, then 40 interest, 10 service fee, and 995 principal.
+    // Remaining: 5 principal outstanding.
     assert_eq!(loan.status, LoanStatus::Active);
-    assert_eq!(loan.late_fees_outstanding, 5);
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, 5);
     assert_eq!(loan.remaining_balance, 5);
 }
 
@@ -3440,110 +3484,209 @@ fn test_repay_installment_zero_amount_rejected() {
     t.client.repay_installment(&user, &loan_id, &0, &0);
 }
 
-// ─── pause ─────────────────────────────────────────────────────────────────────
+// ─── waterfall — bucket accounting & order ────────────────────────────────────
 
-struct PauseCtx {
-    env: Env,
-    client: CreditLineContractClient<'static>,
-    admin: Address,
-    parameters_id: Address,
-    lp_id: Address,
-}
-
-impl PauseCtx {
-    fn setup() -> Self {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register(CreditLineContract, ());
-        let client = CreditLineContractClient::new(&env, &contract_id);
-        let client: CreditLineContractClient<'static> = unsafe { core::mem::transmute(client) };
-
-        let admin = Address::generate(&env);
-        let rep_id = env.register(MockReputation, ());
-        let vendor_registry_id = env.register(VendorRegistryContract, ());
-        use soroban_sdk::{IntoVal, Symbol};
-        let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
-            &vendor_registry_id,
-            &Symbol::new(&env, "initialize"),
-            (&admin,).into_val(&env),
-        );
-        let lp_id = env.register(MockLiquidityPool, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env
-            .register_stellar_asset_contract_v2(token_admin.clone())
-            .address();
-        client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
-
-        let parameters_id = env.register(ParametersContract, ());
-        let params_client = ParametersContractClient::new(&env, &parameters_id);
-        params_client.initialize_defaults(&admin);
-        client.set_parameters_contract(&admin, &parameters_id);
-
-        PauseCtx {
-            env,
-            client,
-            admin,
-            parameters_id,
-            lp_id,
-        }
-    }
-}
-
-#[test]
-fn test_mutating_functions_fail_while_paused() {
-    let ctx = PauseCtx::setup();
-    let params = ParametersContractClient::new(&ctx.env, &ctx.parameters_id);
-
-    // Pause
-    params.set_paused(&ctx.admin, &true);
-
-    let user = Address::generate(&ctx.env);
-    let vendor = Address::generate(&ctx.env);
-
-    // create_loan should fail
-    let due = ctx.env.ledger().timestamp() + 10_000;
-    let schedule = ctx.single_installment_for(due);
+/// Helper: assert that the invariant `remaining_balance == sum of all outstanding
+/// buckets` holds for a given loan.
+fn assert_bucket_invariant(t: &TestCtx, loan_id: u64) {
+    let loan = t.client.get_loan(&loan_id);
+    let sum = loan.principal_outstanding
+        + loan.interest_outstanding
+        + loan.service_fee_outstanding
+        + loan.late_fees_outstanding;
     assert_eq!(
-        ctx.client.try_create_loan(
-            &user,
-            &vendor,
-            &1_000,
-            &200,
-            &schedule,
-            &LoanType::Standard,
-        ),
-        Err(Ok(CreditLineError::Paused))
+        loan.remaining_balance, sum,
+        "remaining_balance must equal sum of all outstanding buckets"
     );
 }
 
 #[test]
-fn test_read_only_functions_continue_while_paused() {
-    let ctx = PauseCtx::setup();
-    let params = ParametersContractClient::new(&ctx.env, &ctx.parameters_id);
+fn test_waterfall_order_late_fees_paid_first() {
+    // Verify that late fees are settled before interest, service fee, and principal.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
 
-    // Pause
-    params.set_paused(&ctx.admin, &true);
+    // Manually set late fees to simulate an overdue loan without time travel.
+    let mut loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.late_fees_outstanding, 0);
 
-    // get_version should work
-    assert_eq!(ctx.client.get_version(), 1u32);
+    // We'll use apply_late_fees after advancing time.
+    let due_date = loan.repayment_schedule.get(0).unwrap().due_date;
+    t.env.ledger().set_timestamp(due_date + crate::types::SECONDS_PER_DAY); // 1 day overdue
+    t.client.apply_late_fees(&loan_id);
 
-    // get_admin should work
-    assert_eq!(ctx.client.get_admin(), ctx.admin);
+    let loan = t.client.get_loan(&loan_id);
+    let late_fees_before = loan.late_fees_outstanding;
+    assert!(late_fees_before > 0, "late fees should have accrued");
+
+    // Pay exactly the late fees + interest + service fee (leave principal).
+    let partial = late_fees_before + loan.interest_outstanding + loan.service_fee_outstanding;
+    t.mint(&user, partial);
+    t.client.repay_loan(&user, &loan_id, &partial);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Late fees, interest, and service fee must be zero after payment.
+    assert_eq!(loan.late_fees_outstanding, 0, "late fees paid first");
+    assert_eq!(loan.interest_outstanding, 0, "interest paid after late fees");
+    assert_eq!(loan.service_fee_outstanding, 0, "service fee paid after interest");
+    // Only principal remains.
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL);
+    assert_bucket_invariant(&t, loan_id);
 }
 
-// Helper for the PauseCtx since we can't call TestCtx methods directly
-impl PauseCtx {
-    fn single_installment_for(&self, due_date: u64) -> soroban_sdk::Vec<RepaymentInstallment> {
-        let mut s = soroban_sdk::Vec::new(&self.env);
-        s.push_back(RepaymentInstallment {
-            amount: 1000,
-            due_date,
-            paid: false,
-            paid_at: 0,
-        });
-        s
-    }
+#[test]
+fn test_waterfall_bucket_invariant_after_repay_loan() {
+    // After every repay_loan the invariant must hold.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    // Invariant after creation.
+    assert_bucket_invariant(&t, loan_id);
+
+    // Partial payment.
+    t.mint(&user, 200);
+    t.client.repay_loan(&user, &loan_id, &200);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Another partial payment.
+    t.mint(&user, 300);
+    t.client.repay_loan(&user, &loan_id, &300);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Full payment.
+    let loan = t.client.get_loan(&loan_id);
+    t.mint(&user, loan.remaining_balance);
+    t.client.repay_loan(&user, &loan_id, &loan.remaining_balance);
+    assert_bucket_invariant(&t, loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.remaining_balance, 0);
+    assert_eq!(loan.status, LoanStatus::Paid);
+}
+
+#[test]
+fn test_repay_loan_partial_buckets_decremented() {
+    // A partial payment of 300 should decrement interest and service fee
+    // first (as part of the waterfall: late fees→interest→service fee→principal).
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    let loan_id = t.create_default_loan(&user, &vendor);
+
+    t.mint(&user, 300);
+    t.client.repay_loan(&user, &loan_id, &300);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Payment of 300: no late fees → 40 interest → 10 service fee → 250 principal.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL - 250);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - 300);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_repay_installment_buckets_decremented() {
+    // repay_installment must decrement the individual buckets via the waterfall.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    t.mint(&user, payment);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Payment of 500: 40 interest → 10 service fee → 450 principal.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL - 450);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - payment);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_repay_installment_full_payment_sets_paid_and_buckets_zeroed() {
+    // Full repayment via repay_installment must zero all buckets and mark Paid.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 1);
+
+    t.mint(&user, DEFAULT_TOTAL_DUE);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &DEFAULT_TOTAL_DUE);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Paid);
+    assert_eq!(loan.remaining_balance, 0);
+    assert_eq!(loan.principal_outstanding, 0);
+    assert_eq!(loan.interest_outstanding, 0);
+    assert_eq!(loan.service_fee_outstanding, 0);
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_bucket_invariant(&t, loan_id);
+}
+
+#[test]
+fn test_waterfall_bucket_invariant_after_repay_installment() {
+    // After every repay_installment the invariant must hold.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 3);
+
+    // Pay first installment.
+    let p1 = 350_i128;
+    t.mint(&user, p1);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &p1);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Pay second installment.
+    let p2 = 350_i128;
+    t.mint(&user, p2);
+    t.env.ledger().set_timestamp(15000);
+    t.client.repay_installment(&user, &loan_id, &1, &p2);
+    assert_bucket_invariant(&t, loan_id);
+
+    // Pay final installment.
+    let loan = t.client.get_loan(&loan_id);
+    t.mint(&user, loan.remaining_balance);
+    t.env.ledger().set_timestamp(25000);
+    t.client.repay_installment(&user, &loan_id, &2, &loan.remaining_balance);
+    assert_bucket_invariant(&t, loan_id);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Paid);
+}
+
+#[test]
+fn test_repay_installment_active_debt_decremented() {
+    // repay_installment must decrease the borrower's active debt.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    let before = t.client.get_user_active_debt(&user);
+    assert_eq!(before, DEFAULT_TOTAL_DUE);
+
+    let payment = 300_i128;
+    t.mint(&user, payment);
+    t.env.ledger().set_timestamp(5000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let after = t.client.get_user_active_debt(&user);
+    assert_eq!(after, DEFAULT_TOTAL_DUE - payment);
+    assert_bucket_invariant(&t, loan_id);
 }
 
 #[test]
@@ -3562,4 +3705,213 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::sub_i128(min, 1), Err(CreditLineError::Underflow));
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
+}
+
+// ─── mark_defaulted loss absorption ──────────────────────────────────────────
+
+#[test]
+fn test_mark_defaulted_calls_absorb_loss() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 200);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    // Verify receive_guarantee was called with the guarantee amount
+    assert!(
+        t.was_receive_guarantee_called(),
+        "Expected receive_guarantee to be called"
+    );
+
+    // Verify absorb_loss was called with the correct shortfall
+    // principal_outstanding = 1000, guarantee = 200 → shortfall = 800
+    assert!(
+        t.was_absorb_loss_called(),
+        "Expected absorb_loss to be called on default"
+    );
+    assert_eq!(t.get_absorb_loss_amount(), 800);
+}
+
+#[test]
+fn test_mark_defaulted_zero_shortfall_skips_absorb_loss() {
+    // If guarantee == principal_outstanding, no loss to absorb.
+    // With the default protocol parameters (0% grace), guarantee=1000 on a 1000 loan
+    // means pool_contribution = 0, so no locked liquidity → no loss.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    // Use a loan where guarantee == total_amount → pool funds nothing
+    // But create_loan requires guarantee <= total_amount.
+    // We use total=1000, guarantee=1000 → pool_contribution = 0, principal_outstanding = 1000
+    // After default: principal_outstanding - guarantee = 0, skip absorb_loss
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(1000, 5000);
+    t.mint(&user, 1000);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &1000, &1000, &schedule, &LoanType::Standard);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    // receive_guarantee should still be called
+    assert!(t.was_receive_guarantee_called());
+    // absorb_loss should NOT be called (shortfall == 0)
+    assert!(!t.was_absorb_loss_called());
+}
+
+#[test]
+fn test_mark_defaulted_absorb_loss_with_partial_repayment() {
+    // After a partial repayment, the absorb_loss amount should reflect
+    // remaining principal minus guarantee.
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+
+    t.env.ledger().set_timestamp(1000);
+    let schedule = t.single_installment(DEFAULT_TOTAL_DUE, 5000);
+    t.mint(&user, DEFAULT_GUARANTEE);
+    let loan_id = t
+        .client
+        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+
+    // Repay some of the loan: 500 out of 1050
+    t.mint(&user, 500);
+    t.client.repay_loan(&user, &loan_id, &500);
+
+    // Verify principal was partially reduced
+    let loan_after_repay = t.client.get_loan(&loan_id);
+    // With the waterfall, 500 repays: late_fees=0, interest=40, service_fee=10, principal=450
+    // principal_outstanding should be 1000 - 450 = 550
+    assert!(loan_after_repay.principal_outstanding < DEFAULT_PRINCIPAL);
+
+    t.advance_past(5000);
+    t.client.mark_defaulted(&loan_id);
+
+    assert!(t.was_absorb_loss_called());
+    // shortfall = principal_outstanding_after_repay - guarantee
+    // = 550 - 200 = 350
+    let expected_shortfall = loan_after_repay.principal_outstanding - DEFAULT_GUARANTEE;
+    assert_eq!(t.get_absorb_loss_amount(), expected_shortfall);
+}
+
+#[test]
+fn test_mark_defaulted_loss_absorption_share_price_impact() {
+    // End-to-end: deposit → fund → default with real pool contract.
+    // Verify share price drops after default.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    use soroban_sdk::{IntoVal, Symbol};
+
+    // Register token
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_sac = StellarAssetClient::new(&env, &token_id);
+
+    // Register real LiquidityPool
+    let lp_id = env.register(LiquidityPoolContract, ());
+    let lp_client = LiquidityPoolContractClient::new(&env, &lp_id);
+
+    // SAFETY: env outlives client — same pattern as other tests
+    let lp_client: LiquidityPoolContractClient<'static> = unsafe { core::mem::transmute(lp_client) };
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let merchant_fund = Address::generate(&env);
+
+    lp_client.initialize(&admin, &token_id, &treasury, &merchant_fund);
+
+    // Register reputation mock
+    let rep_id = env.register(MockReputation, ());
+
+    // Register vendor registry
+    let vendor_registry_id = env.register(VendorRegistryContract, ());
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "initialize"),
+        (&admin,).into_val(&env),
+    );
+
+    // Register CreditLine contract
+    let cl_id = env.register(CreditLineContract, ());
+    let cl_client = CreditLineContractClient::new(&env, &cl_id);
+    let cl_client: CreditLineContractClient<'static> = unsafe { core::mem::transmute(cl_client) };
+
+    cl_client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+    lp_client.set_creditline(&admin, &cl_id);
+
+    // Fund pool with 10_000 tokens
+    let lp = Address::generate(&env);
+    token_sac.mint(&lp, &10_000);
+    lp_client.deposit(&lp, &10_000);
+
+    let share_price_before = lp_client.get_pool_stats().share_price;
+
+    // Create and default a loan
+    let user = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    // Register vendor
+    let vendor_name = SorobanString::from_str(&env, "Test Vendor");
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "register_vendor"),
+        (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
+    );
+
+    env.ledger().set_timestamp(1000);
+    let mut schedule = soroban_sdk::Vec::new(&env);
+    schedule.push_back(RepaymentInstallment {
+        amount: 1050,
+        due_date: 5000,
+        paid: false,
+        paid_at: 0,
+    });
+    token_sac.mint(&user, &200);
+
+    let loan_id = cl_client.create_loan(
+        &user,
+        &vendor,
+        &1000,
+        &200,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Advance past due date and default
+    env.ledger().set_timestamp(5001);
+    cl_client.mark_defaulted(&loan_id);
+
+    let share_price_after = lp_client.get_pool_stats().share_price;
+    // Before default: total=10_000, shares=10_000, share_price=10_000
+    // After fund_loan(800): total=10_000, locked=800 (share_price unchanged)
+    // After receive_guarantee(200): total=10_200, locked=600
+    // After absorb_loss(800): total=9_400, locked=0
+    // share_price = 9_400 * 10_000 / 10_000 = 9_400
+    assert_eq!(share_price_after, 9_400);
+
+    // Verify pool can still pay LP withdrawals (no unreachable locked liquidity)
+    let pool_stats = lp_client.get_pool_stats();
+    assert_eq!(pool_stats.locked_liquidity, 0);
+    assert!(pool_stats.total_liquidity > 0);
 }

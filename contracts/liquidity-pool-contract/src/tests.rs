@@ -2177,8 +2177,7 @@ fn test_receive_repayment_unauthorized_caller_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #8)")]
-fn test_receive_repayment_principal_exceeds_locked_fails() {
+fn test_receive_repayment_principal_exceeds_locked_floors_at_zero() {
     let t = TestEnv::setup();
     let provider = Address::generate(&t.env);
     let merchant = Address::generate(&t.env);
@@ -2188,9 +2187,13 @@ fn test_receive_repayment_principal_exceeds_locked_fails() {
     // Fund a loan of 500
     t.client.fund_loan(&t.creditline, &merchant, &500);
 
-    // Try to repay with 600 principal (exceeds locked 500)
+    // Repay with 600 principal (exceeds locked 500)
     t.mint(&t.creditline, 600);
     t.client.receive_repayment(&t.creditline, &600, &0);
+
+    let stats = t.client.get_pool_stats();
+    // Locked should be floored to zero
+    assert_eq!(stats.locked_liquidity, 0);
 }
 
 // ─── receive_guarantee Edge Cases ────────────────────────────────────────────

@@ -279,13 +279,10 @@ impl LiquidityPoolContract {
         }
         Self::enter_non_reentrant(&env);
 
-        // Decrease locked liquidity by the principal
+        // Decrease locked liquidity by the principal (capped at 0)
         let locked =
             storage::get_locked_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
-        if principal > locked {
-            return Err(LiquidityPoolError::Underflow);
-        }
-        let new_locked = safe_math::sub_i128(locked, principal)?;
+        let new_locked = 0_i128.max(safe_math::sub_i128(locked, principal)?);
         storage::set_locked_liquidity(&env, new_locked);
 
         // Pull funds from CreditLine after accounting changes.

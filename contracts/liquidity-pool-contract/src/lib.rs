@@ -401,11 +401,26 @@ impl LiquidityPoolContract {
     /// The LP portion is NOT transferred out; it stays in the pool and inflates
     /// the share price (existing LP shares become worth more).
     ///
-    /// This function is called internally by `receive_repayment`, but it is also
-    /// `pub` so that the CreditLine (or admin, in edge-case) can call it directly.
-    pub fn distribute_interest(env: Env, interest_amount: i128) -> Result<(), LiquidityPoolError> {
-        Self::require_not_paused(&env);
+    /// Only the registered CreditLine contract may call this function.
+    /// The caller must transfer `interest_amount` tokens into the pool before
+    /// the accounting change occurs, ensuring the share price rise is backed
+    /// by real tokens.
+    pub fn distribute_interest(
+        env: Env,
+        creditline: Address,
+        interest_amount: i128,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
         Self::enter_non_reentrant(&env);
+
+        // Pull tokens from the creditline contract into the pool before
+        // any accounting change, so share price cannot rise without backing.
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&creditline, &env.current_contract_address(), &interest_amount);
+
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
         res
@@ -418,13 +433,30 @@ impl LiquidityPoolContract {
     /// portion after fee split), which increases the share price for every
     /// LP pro-rata.
     ///
+    /// Only the registered CreditLine contract may call this function.
+    /// The caller must transfer `interest_amount` tokens into the pool before
+    /// the accounting change occurs.
+    ///
     /// Fee split (same as `distribute_interest`):
     ///   - 85 % → Liquidity Providers (share price increase)
     ///   - 10 % → Protocol Treasury
     ///   -  5 % → Merchant Incentive Fund
-    pub fn accumulate_interest(env: Env, interest_amount: i128) -> Result<(), LiquidityPoolError> {
-        Self::require_not_paused(&env);
+    pub fn accumulate_interest(
+        env: Env,
+        creditline: Address,
+        interest_amount: i128,
+    ) -> Result<(), LiquidityPoolError> {
+        creditline.require_auth();
+        Self::require_creditline(&env, &creditline);
+
         Self::enter_non_reentrant(&env);
+
+        // Pull tokens from the creditline contract into the pool before
+        // any accounting change, so share price cannot rise without backing.
+        let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&creditline, &env.current_contract_address(), &interest_amount);
+
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
         res
@@ -540,10 +572,14 @@ impl LiquidityPoolContract {
 
     /// Calculate how many tokens `shares` are worth at the current share price.
     pub fn calculate_withdrawal(env: Env, shares: i128) -> i128 {
-        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         if shares == 0 {
             return 0;
         }
+        let total_shares = storage::get_total_shares(&env).unwrap_or(0);
+        if total_shares == 0 {
+            return 0;
+        }
+        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         safe_math::div_i128(
             safe_math::mul_i128(shares, share_price).unwrap_or(0),
             types::SHARE_PRICE_PRECISION,

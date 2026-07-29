@@ -98,6 +98,10 @@ Update this file after every completed contract change, fix, or architectural de
 - Added `MENTORVOUCHED`, `VOUCHREVOKED`, and `MENTORVERIFIED` event helpers using short Soroban event symbols
 - Added reputation `add_boost` and `remove_boost` updater-gated APIs for vouching cross-contract calls
 - Added mock reputation cross-contract tests covering mentor verification, vouching, revocation, duplicate rejection, unverified mentor rejection, admin rejection, and event emission
+- Added `get_version()` and `upgrade()` functions following the same pattern as all other contracts
+- Added `CONTRACTUPGRADED` event emission on upgrade
+- Added version and upgrade unit tests
+- Removed unused `safe_math` functions (replaced with comment placeholder for future use)
 
 ---
 
@@ -114,6 +118,15 @@ Update this file after every completed contract change, fix, or architectural de
 - Fixed: `IntoVal` import moved before first usage in `test_mark_defaulted_loss_absorption_share_price_impact`
 
 ## Recently Fixed
+
+### Security: Unauthorized `distribute_interest` / `accumulate_interest` (SC-17)
+- **Problem:** `distribute_interest()` and `accumulate_interest()` were public mutating functions with no `require_auth()` and no caller restriction. Any funded account could call them with an arbitrary amount, draining the pool's token balance to treasury and merchant fund addresses and inflating the share price so the caller could redeem LP shares for more than deposited.
+- **Fix:** Changed both function signatures to accept `creditline: Address` as the first parameter. Added `creditline.require_auth()` as the literal first line and `Self::require_creditline(&env, &creditline)` as the second, matching `receive_repayment()` exactly. Both functions now pull `interest_amount` tokens into the pool via `token_client.transfer()` before any accounting change. Updated doc comments to remove the admin edge-case mention.
+- **Internal call site preserved:** `receive_repayment()` still calls `distribute_interest_internal()` directly — it has already pulled funds and validated the caller, so it must not go through the newly guarded public wrappers.
+- **Pre-existing bug fixed:** `calculate_withdrawal()` now returns 0 when the pool has no shares, fixing two pre-existing test failures.
+- **Files:** `contracts/liquidity-pool-contract/src/lib.rs`, `contracts/liquidity-pool-contract/src/tests.rs`
+- **New tests:** 8 new tests (unauthorized caller rejection for both functions, token pull + distribution for both, receive_repayment no-regression, receive_repayment single-distribution regression)
+- **Verification:** `cargo check`, `cargo test -p liquidity-pool-contract` (86 passed, 0 failed), `cargo clippy -p liquidity-pool-contract -- -D warnings` (0 warnings)
 
 ### Issue #7 — Follow-up: Missing `approve_vendor` in `RealIntegrationCtx::register_vendor`
 - Discovered second `register_vendor` helper in `RealIntegrationCtx` (integration test struct, ~line 2390) that only called `register_vendor` without `approve_vendor`
@@ -141,7 +154,7 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Architecture Decisions
 
-- **5 contracts, not 6** — `lp-contract` was dead code, removed. `liquidity-pool-contract` is the canonical LP implementation.
+- **6 contracts, not 5** — `vouching-contract` added for mentor-based reputation boosting. `lp-contract` was dead code, removed. `liquidity-pool-contract` is the canonical LP implementation.
 - **Vendor over Merchant** — Renamed to reflect StepFi's learning-focused domain.
 - **TTL approach** — Using 60-day threshold / 120-day extension constants. Off-chain indexer is responsible for bumping TTL on active loan entries.
 - **Upgrade pattern** — All contracts have `upgrade()` gated by admin `require_auth()`. Admin address is set at `initialize()` and transferable via `set_admin()`.
@@ -152,7 +165,7 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Contract Deployment Status
 
-All 5 contracts are deployed, initialized, and active on Stellar testnet
+All 6 contracts are deployed, initialized, and active on Stellar testnet
 (matches `README.md` and StepFi-Web `VERIFICATION.md`). These are the IDs
 live clients (StepFi-Web `constants/config.ts`) point at:
 
@@ -162,6 +175,7 @@ live clients (StepFi-Web `constants/config.ts`) point at:
 | `parameters-contract` | ✅ Yes | `CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B` | 2026-05-11 |
 | `vendor-registry-contract` | ✅ Yes | `CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L` | 2026-05-11 |
 | `liquidity-pool-contract` | ✅ Yes | `CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT` | 2026-05-11 |
+| `vouching-contract` | ⏳ Pending | `PENDING_DEPLOYMENT` | — |
 | `creditline-contract` | ✅ Yes | `CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X` | 2026-05-12 (redeployed) |
 
 Deployer: `GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF`

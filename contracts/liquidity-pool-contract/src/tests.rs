@@ -2491,6 +2491,22 @@ fn test_loan_funding_and_guarantee_recovery_cycle() {
     assert_eq!(stats_final.available_liquidity, 3_000);
 }
 
+// ─── distribute_interest / accumulate_interest auth guard ────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_distribute_interest_unauthorized_caller_fails() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    let intruder = Address::generate(&t.env);
+    t.mint(&intruder, 100);
+    // intruder is not the registered creditline → should fail with NotCreditLine
+    t.client.distribute_interest(&intruder, &100);
+}
+
 // ─── absorb_loss ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -2602,14 +2618,128 @@ fn test_absorb_loss_after_partial_repayment_then_default() {
 
     let after = t.client.get_pool_stats();
     assert_eq!(after.locked_liquidity, 0);
-    // total_liquidity = 1000 + 200 (guarantee) - 300 (loss) = 900
-    // But receive_repayment also adjusted total: 1000 + 0 (no interest) - ...
-    // Actually receive_repayment with 0 interest doesn't change total_liquidity
-    // (it only reduces locked by the principal and transfers principal tokens).
-    // After repay: total = 1000, locked = 500
-    // After guarantee(200): total = 1200, locked = 300
-    // After absorb_loss(300): total = 900, locked = 0
     assert_eq!(after.total_liquidity, 900);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_accumulate_interest_unauthorized_caller_fails() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    let intruder = Address::generate(&t.env);
+    t.mint(&intruder, 100);
+    // intruder is not the registered creditline → should fail with NotCreditLine
+    t.client.accumulate_interest(&intruder, &100);
+}
+
+#[test]
+fn test_distribute_interest_pulls_tokens_and_distributes() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    // Mint 1000 tokens to creditline so it can transfer them to the pool
+    t.mint(&t.creditline, 1_000);
+
+    // Creditline calls distribute_interest — tokens are pulled in, then split
+    t.client.distribute_interest(&t.creditline, &1_000);
+
+    let stats = t.client.get_pool_stats();
+    // LP portion = 850 stays in pool → total_liquidity = 10000 + 850 = 10850
+    assert_eq!(stats.total_liquidity, 10_850);
+
+    // Treasury receives 10% = 100
+    assert_eq!(t.token.balance(&t.treasury), 100);
+
+    // Merchant fund receives 5% = 50
+    assert_eq!(t.token.balance(&t.merchant_fund), 50);
+}
+
+#[test]
+fn test_accumulate_interest_pulls_tokens_and_distributes() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    // Mint 500 tokens to creditline so it can transfer them to the pool
+    t.mint(&t.creditline, 500);
+
+    // Creditline calls accumulate_interest — same behavior as distribute_interest
+    t.client.accumulate_interest(&t.creditline, &500);
+
+    let stats = t.client.get_pool_stats();
+    // LP portion = 425 → total_liquidity = 10000 + 425 = 10425
+    assert_eq!(stats.total_liquidity, 10_425);
+
+    assert_eq!(t.token.balance(&t.treasury), 50);
+    assert_eq!(t.token.balance(&t.merchant_fund), 25);
+}
+
+#[test]
+fn test_receive_repayment_no_regression_with_interest() {
+    // Verify that receive_repayment still distributes interest identically
+    // to the pre-fix behavior: creditline mints tokens, calls receive_repayment,
+    // and the pool accounting is unchanged.
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    let share_price_before = t.client.get_pool_stats().share_price;
+    assert_eq!(share_price_before, 10_000);
+
+    // Fund a loan first so locked_liquidity > 0
+    let merchant = Address::generate(&t.env);
+    t.client.fund_loan(&t.creditline, &merchant, &5_000);
+
+    // Mint principal + interest to creditline
+    t.mint(&t.creditline, 5_500);
+
+    // receive_repayment: pulls tokens, reduces locked, distributes interest
+    t.client.receive_repayment(&t.creditline, &5_000, &500);
+
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.locked_liquidity, 0);
+
+    // LP portion of 500 = 425 → total_liquidity = 10000 + 425 = 10425
+    assert_eq!(stats.total_liquidity, 10_425);
+
+    // share_price = (10425 * 10000) / 10000 = 10425
+    assert_eq!(stats.share_price, 10_425);
+
+    // Treasury: 10% of 500 = 50
+    assert_eq!(t.token.balance(&t.treasury), 50);
+
+    // Merchant fund: 5% of 500 = 25
+    assert_eq!(t.token.balance(&t.merchant_fund), 25);
+}
+
+#[test]
+fn test_receive_repayment_distributes_interest_exactly_once() {
+    // Regression: ensure receive_repayment does not double-count interest.
+    // Pool starts with 10000, receives 400 principal + 100 interest.
+    // After: total_liquidity = 10000 + 85 (LP portion of 100) = 10085
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    let merchant = Address::generate(&t.env);
+    t.client.fund_loan(&t.creditline, &merchant, &400);
+
+    t.mint(&t.creditline, 500);
+    t.client.receive_repayment(&t.creditline, &400, &100);
+
+    let stats = t.client.get_pool_stats();
+    assert_eq!(stats.locked_liquidity, 0);
+    assert_eq!(stats.total_liquidity, 10_085);
+    assert_eq!(t.token.balance(&t.treasury), 10);
+    assert_eq!(t.token.balance(&t.merchant_fund), 5);
 }
 
 #[test]

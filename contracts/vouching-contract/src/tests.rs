@@ -345,3 +345,37 @@ fn test_reentrancy_guard_is_released_after_call() {
     client.vouch(&mentor2, &learner2);
     assert_eq!(client.get_vouches(&learner2).len(), 1);
 }
+
+// ============================================================================
+// Version & Upgrade Tests
+// ============================================================================
+
+#[test]
+fn test_get_version_returns_default() {
+    let ctx = TestCtx::setup();
+    assert_eq!(ctx.client.get_version(), 1u32);
+}
+
+#[test]
+fn test_upgrade_bumps_version_and_emits_event() {
+    let ctx = TestCtx::setup();
+
+    assert_eq!(ctx.client.get_version(), 1u32);
+
+    let wasm_hash = ctx.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+        &ctx.env,
+        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+    ));
+    ctx.client.upgrade(&wasm_hash);
+
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = ctx.env.events().all();
+    let mut found = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&ctx.env);
+        if topic == soroban_sdk::Symbol::new(&ctx.env, "CONUPGRADED") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "CONUPGRADED event not found");
+}

@@ -23,7 +23,8 @@ cargo build --target wasm32-unknown-unknown --release \
   -p liquidity-pool-contract \
   -p vendor-registry-contract \
   -p parameters-contract \
-  -p reputation-contract 2>&1 | tail -3
+  -p reputation-contract \
+  -p vouching-contract 2>&1 | tail -3
 
 echo "Step 2 — Building creditline-contract..."
 cargo build --target wasm32-unknown-unknown --release -p creditline-contract 2>&1 | tail -3
@@ -34,7 +35,7 @@ WASM_DIR="target/wasm32-unknown-unknown/release"
 
 # Optimize WASMs (required: strips reference-types that Soroban runtime rejects)
 echo "Step 3 — Optimizing WASMs..."
-for c in parameters_contract reputation_contract vendor_registry_contract liquidity_pool_contract creditline_contract; do
+for c in parameters_contract reputation_contract vendor_registry_contract liquidity_pool_contract vouching_contract creditline_contract; do
   stellar contract optimize --wasm "$WASM_DIR/${c}.wasm" 2>&1 | tail -1
 done
 echo ""
@@ -69,6 +70,13 @@ LIQUIDITY_POOL_ID=$(stellar contract deploy \
   --source $SOURCE \
   --network $NETWORK 2>&1 | tail -1)
 echo "  LIQUIDITY_POOL_CONTRACT_ID=$LIQUIDITY_POOL_ID"
+
+echo "Deploying vouching-contract..."
+VOUCHING_ID=$(stellar contract deploy \
+  --wasm $WASM_DIR/vouching_contract.optimized.wasm \
+  --source $SOURCE \
+  --network $NETWORK 2>&1 | tail -1)
+echo "  VOUCHING_CONTRACT_ID=$VOUCHING_ID"
 
 echo "Deploying creditline-contract..."
 CREDITLINE_ID=$(stellar contract deploy \
@@ -114,6 +122,21 @@ stellar contract invoke --id $LIQUIDITY_POOL_ID --source $SOURCE --network $NETW
   --admin $ADMIN_PUBKEY \
   --merchant_fund $MERCHANT_FUND 2>&1 | tail -1
 
+# vouch_boost=10: DEFAULT_VOUCH_BOOST from vouching-contract types.rs.
+# On the 0-100 reputation scale, 10 points is a significant single-mentor
+# contribution (moves a user roughly one credit tier at the lower end).
+# Multiple mentors stack; score caps at 100 via reputation overflow check.
+echo "Initializing vouching..."
+stellar contract invoke --id $VOUCHING_ID --source $SOURCE --network $NETWORK \
+  -- initialize \
+  --admin $ADMIN_PUBKEY \
+  --reputation_contract $REPUTATION_ID \
+  --vouch_boost 10 2>&1 | tail -1
+
+echo "Granting vouching-contract updater role on reputation..."
+stellar contract invoke --id $REPUTATION_ID --source $SOURCE --network $NETWORK \
+  -- set_updater --admin $ADMIN_PUBKEY --updater $VOUCHING_ID --allowed true 2>&1 | tail -1
+
 echo "Initializing creditline..."
 stellar contract invoke --id $CREDITLINE_ID --source $SOURCE --network $NETWORK \
   -- initialize \
@@ -131,6 +154,7 @@ PARAMETERS_CONTRACT_ID=$PARAMETERS_ID
 REPUTATION_CONTRACT_ID=$REPUTATION_ID
 VENDOR_REGISTRY_CONTRACT_ID=$VENDOR_REGISTRY_ID
 LIQUIDITY_POOL_CONTRACT_ID=$LIQUIDITY_POOL_ID
+VOUCHING_CONTRACT_ID=$VOUCHING_ID
 CREDIT_LINE_CONTRACT_ID=$CREDITLINE_ID
 ENVEOF
 
@@ -169,6 +193,13 @@ cat > contracts/deployed-testnet.json << JSONEOF
       "initialized": true,
       "initializedAt": "$TODAY",
       "initMethod": "initialize(token, treasury, admin, merchant_fund)"
+    },
+    "vouching": {
+      "id": "$VOUCHING_ID",
+      "initialized": true,
+      "initializedAt": "$TODAY",
+      "initMethod": "initialize(admin, reputation_contract, vouch_boost)",
+      "vouchBoost": 10
     },
     "creditline": {
       "id": "$CREDITLINE_ID",

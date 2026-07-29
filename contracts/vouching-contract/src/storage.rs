@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 use crate::{
     errors::VouchingError,
@@ -7,6 +7,7 @@ use crate::{
 
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
@@ -110,6 +111,14 @@ pub fn set_reentrancy_locked(env: &Env, locked: bool) {
 
 pub fn extend_vouch_ttl(env: &Env, mentor: &Address, learner: &Address) {
     extend_persistent_ttl(env, &DataKey::Vouch(mentor.clone(), learner.clone()));
+}
+
+pub fn get_version(env: &Env) -> Result<u32, VouchingError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }
 
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {

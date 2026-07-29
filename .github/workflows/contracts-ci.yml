@@ -46,6 +46,8 @@ jobs:
             -p reputation-contract
           cargo build --locked --target wasm32-unknown-unknown --release \
             -p parameters-contract
+          cargo build --locked --target wasm32-unknown-unknown --release \
+            -p vouching-contract
 
       - name: Build all contracts
         run: |
@@ -53,6 +55,4 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --locked --manifest-path \
-            contracts/creditline-contract/Cargo.toml \
-            2>&1
+          cargo test --locked 2>&1

@@ -13,7 +13,7 @@ mod storage;
 mod types;
 
 pub use errors::VouchingError;
-pub use types::{VouchRecord, DEFAULT_VOUCH_BOOST};
+pub use types::{VouchRecord, DEFAULT_VOUCH_BOOST, VOUCH_DURATION};
 
 #[contract]
 pub struct VouchingContract;
@@ -65,12 +65,16 @@ impl VouchingContract {
 
         let boost_amount =
             storage::get_vouch_boost(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        // Capture the learner's score before this vouch's boost is applied so
+        // boost removal can be clamped to never drop them below this baseline.
+        let baseline = Self::get_reputation_score(&env, &learner);
         let record = VouchRecord {
             mentor: mentor.clone(),
             learner: learner.clone(),
             ts: env.ledger().timestamp(),
             boost_amount,
             active: true,
+            baseline,
         };
 
         storage::set_vouch(&env, &record);
@@ -92,7 +96,7 @@ impl VouchingContract {
 
         Self::enter_non_reentrant(&env);
 
-        Self::remove_reputation_boost(&env, &learner, record.boost_amount);
+        Self::remove_reputation_boost_clamped(&env, &learner, &record);
         record.active = false;
         storage::set_vouch(&env, &record);
         events::emit_vouch_revoked(&env, &mentor, &learner, record.boost_amount);
@@ -100,12 +104,50 @@ impl VouchingContract {
         Self::exit_non_reentrant(&env);
     }
 
+    /// Permissionlessly expire a vouch whose TTL has elapsed. Mirrors the
+    /// permissionless `apply_late_fees()` pattern in `creditline`: anyone may
+    /// trigger it, no auth required. Deactivates the record and removes its
+    /// boost (clamped to the recorded baseline). Idempotent — re-expiring an
+    /// already-inactive record is a no-op.
+    pub fn expire_vouch(env: Env, mentor: Address, learner: Address) {
+        let mut record = storage::get_vouch(&env, &mentor, &learner)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        let now = env.ledger().timestamp();
+        let expiry = record.ts.checked_add(VOUCH_DURATION).unwrap_or(u64::MAX);
+        if expiry >= now {
+            panic_with_error!(&env, VouchingError::VouchNotExpired);
+        }
+
+        // Already deactivated (revoked or previously expired). Idempotent no-op.
+        if !record.active {
+            return;
+        }
+
+        Self::enter_non_reentrant(&env);
+
+        Self::remove_reputation_boost_clamped(&env, &learner, &record);
+        record.active = false;
+        storage::set_vouch(&env, &record);
+        events::emit_vouch_expired(&env, &mentor, &learner, record.boost_amount);
+
+        Self::exit_non_reentrant(&env);
+    }
+
     pub fn get_vouches(env: Env, learner: Address) -> Vec<VouchRecord> {
         let mentors = storage::get_learner_mentors(&env, &learner);
+        let now = env.ledger().timestamp();
         let mut records = Vec::new(&env);
 
         for mentor in mentors {
-            if let Ok(record) = storage::get_vouch(&env, &mentor, &learner) {
+            if let Ok(mut record) = storage::get_vouch(&env, &mentor, &learner) {
+                // A vouch whose TTL has elapsed is expired regardless of what
+                // storage says, so readers never observe a stale active boost.
+                if record.active
+                    && record.ts.checked_add(VOUCH_DURATION).unwrap_or(u64::MAX) < now
+                {
+                    record.active = false;
+                }
                 records.push_back(record);
             }
         }
@@ -178,6 +220,33 @@ impl VouchingContract {
         )
         .unwrap_or_else(|_| panic_with_error!(env, VouchingError::ReputationCallFailed))
         .unwrap_or_else(|_| panic_with_error!(env, VouchingError::ReputationCallFailed));
+    }
+
+    /// Read the learner's current reputation score from the reputation contract.
+    fn get_reputation_score(env: &Env, learner: &Address) -> u32 {
+        let reputation_contract =
+            storage::get_reputation_contract(env).unwrap_or_else(|err| panic_with_error!(env, err));
+        env.try_invoke_contract::<u32, soroban_sdk::Error>(
+            &reputation_contract,
+            &Symbol::new(env, "get_score"),
+            (learner,).into_val(env),
+        )
+        .unwrap_or_else(|_| panic_with_error!(env, VouchingError::ReputationCallFailed))
+        .unwrap_or_else(|_| panic_with_error!(env, VouchingError::ReputationCallFailed))
+    }
+
+    /// Remove a vouch's boost, clamped so the learner's score never falls below
+    /// the baseline recorded at vouch time. Reading the live score lets us
+    /// tolerate penalties (or a mid-life boost-config change) without drifting
+    /// the learner's reputation below what they had without the vouch.
+    fn remove_reputation_boost_clamped(env: &Env, learner: &Address, record: &VouchRecord) {
+        let current = Self::get_reputation_score(env, learner);
+        let removable = current
+            .saturating_sub(record.baseline)
+            .min(record.boost_amount);
+        if removable > 0 {
+            Self::remove_reputation_boost(env, learner, removable);
+        }
     }
 
     fn authorize_reputation_call(

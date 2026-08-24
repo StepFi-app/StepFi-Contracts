@@ -2,11 +2,13 @@ extern crate std;
 
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
-use crate::{VouchingContract, VouchingContractClient, DEFAULT_VOUCH_BOOST};
+use crate::{
+    VouchingContract, VouchingContractClient, DEFAULT_VOUCH_BOOST, VOUCH_DURATION,
+};
 
 #[contract]
 pub struct MockReputationContract;
@@ -36,6 +38,15 @@ impl MockReputationContract {
             .instance()
             .get(&(symbol_short!("SCORE"), learner))
             .unwrap_or(0)
+    }
+
+    pub fn decrease_score(env: Env, updater: Address, user: Address, amount: u32) {
+        updater.require_auth();
+        let score = Self::get_score(env.clone(), user.clone());
+        let next = score.saturating_sub(amount);
+        env.storage()
+            .instance()
+            .set(&(symbol_short!("SCORE"), user), &next);
     }
 }
 
@@ -210,6 +221,128 @@ fn assert_event(env: &Env, expected: Symbol) {
     }
 
     panic!("expected event was not emitted");
+}
+
+// ============================================================================
+// Vouch Expiry & Boost-Accounting Clamp Tests (Issue #87)
+// ============================================================================
+
+#[test]
+fn test_expire_vouch_removes_boost_permissionless() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), DEFAULT_VOUCH_BOOST);
+
+    // Past the TTL — anyone may trigger expiry without special auth.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+
+    let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
+    assert!(!record.active);
+    assert_eq!(ctx.reputation_score(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_expire_vouch_before_ttl_fails() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+
+    // Still within the TTL — expiry must be rejected.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION - 10);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+}
+
+#[test]
+fn test_expire_vouch_idempotent() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+    // Second expiry is a no-op rather than an error.
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+
+    assert_eq!(ctx.reputation_score(), 0);
+    let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
+    assert!(!record.active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_revoke_after_expiry_fails() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+    // Revoking an already-expired (inactive) vouch must fail cleanly.
+    ctx.client.revoke_vouch(&ctx.mentor, &ctx.learner);
+}
+
+#[test]
+fn test_get_vouches_marks_expired_inactive_without_expire() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+
+    // Advance past TTL but never call expire_vouch.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
+    assert!(!record.active);
+}
+
+#[test]
+fn test_boost_removal_clamped_to_baseline() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+
+    // Seed pre-existing reputation so the vouch baseline is non-zero.
+    ctx.env.as_contract(&ctx.reputation, || {
+        ctx.env.storage().instance().set(
+            &(symbol_short!("SCORE"), ctx.learner.clone()),
+            &20u32,
+        );
+    });
+
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner); // score 20 -> 30, baseline 20
+    assert_eq!(ctx.reputation_score(), 30);
+
+    // External penalty drops the score below the baseline.
+    let rep = MockReputationContractClient::new(&ctx.env, &ctx.reputation);
+    rep.decrease_score(&ctx.learner, &ctx.learner, &25);
+    assert_eq!(ctx.reputation_score(), 5);
+
+    // Expiring the vouch must not push the score further below the recorded
+    // baseline — the removable amount is clamped to zero here.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+
+    assert_eq!(ctx.reputation_score(), 5);
+    let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
+    assert!(!record.active);
 }
 
 // ============================================================================

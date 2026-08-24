@@ -16,4 +16,5 @@ pub enum VouchingError {
     ReentrancyDetected = 10,
     Overflow = 11,
     Underflow = 12,
+    VouchNotExpired = 13,
 }

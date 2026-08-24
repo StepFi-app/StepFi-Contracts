@@ -103,6 +103,18 @@ Update this file after every completed contract change, fix, or architectural de
 - Added version and upgrade unit tests
 - Removed unused `safe_math` functions (replaced with comment placeholder for future use)
 
+### Issue #87 — Vouch expiry & boost-accounting clamp
+- **Problem:** Vouches never expired on-chain (no `expire_vouch`, no enforcement), so a mentor's boost inflated a learner's reputation permanently. Secondary: `revoke_vouch()` subtracted the historical `boost_amount` while `vouch()` re-minted with the *current* config boost, and `remove_boost` could push a learner's score below their pre-vouch baseline when combined with penalties or a mid-life boost-config change.
+- **Fix (vouching-contract, not yet deployed — `PENDING_DEPLOYMENT`, so the `VouchRecord` layout change is safe):**
+  - Added `VOUCH_DURATION: u64 = 2_592_000` (30 days) in `types.rs`.
+  - Added permissionless `expire_vouch(mentor, learner)` (no `require_auth`, mirrors creditline's `apply_late_fees`): validates `record.ts + VOUCH_DURATION < now` (else `VouchNotExpired = 13`), deactivates the record, and removes the boost (clamped). Idempotent — re-expiring an already-inactive record is a no-op.
+  - `get_vouches()` now returns expired records with `active = false` regardless of stored state, so readers never see a stale active boost.
+  - Added `baseline: u32` to `VouchRecord` (learner score before this vouch's boost) and a `get_reputation_score()` cross-contract read. New `remove_reputation_boost_clamped()` removes only `min(boost_amount, current_score - baseline)`, so removal can never drop the learner below their pre-vouch baseline even after penalties/config changes.
+  - `revoke_vouch()` now uses the clamped removal instead of subtracting the raw `boost_amount`.
+  - New event `VOUCHEXPIRED`; new error `VouchNotExpired = 13`.
+- **Tests (`tests.rs`):** added `decrease_score` to the mock reputation contract and 6 new tests — permissionless expiry removes boost, expiry-before-TTL rejected (`VouchNotExpired`), idempotent expiry, revoke-after-expiry fails cleanly (`VouchNotActive`), `get_vouches` marks expired inactive without an explicit expire, and boost removal clamped to baseline (pre-existing reputation + penalty scenario).
+- **Verification:** `cargo test -p vouching-contract` → 24 passed, 0 failed.
+
 ---
 
 ## In Progress

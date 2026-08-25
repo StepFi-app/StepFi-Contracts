@@ -53,6 +53,7 @@ impl MockReputationContract {
 struct TestCtx {
     env: Env,
     client: VouchingContractClient<'static>,
+    contract_id: Address,
     reputation: Address,
     admin: Address,
     mentor: Address,
@@ -76,6 +77,7 @@ impl TestCtx {
         Self {
             env,
             client,
+            contract_id,
             reputation,
             admin,
             mentor,
@@ -86,6 +88,18 @@ impl TestCtx {
     fn reputation_score(&self) -> u32 {
         let reputation_client = MockReputationContractClient::new(&self.env, &self.reputation);
         reputation_client.get_score(&self.learner)
+    }
+
+    /// Directly set the configured vouch boost (simulates an admin changing the
+    /// boost config between vouches, which the contract does not yet expose as a
+    /// public entrypoint but which the accounting must tolerate).
+    fn set_configured_boost(&self, boost: u32) {
+        self.env.as_contract(&self.contract_id, || {
+            self.env
+                .storage()
+                .instance()
+                .set(&crate::types::DataKey::VouchBoost, &boost);
+        });
     }
 }
 
@@ -341,6 +355,94 @@ fn test_boost_removal_clamped_to_baseline() {
     ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
 
     assert_eq!(ctx.reputation_score(), 5);
+    let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
+    assert!(!record.active);
+}
+
+// ============================================================================
+// Audit follow-up: multi-vouch exactness & expire idempotency (Issue #87)
+// ============================================================================
+
+/// Issue acceptance criterion 2: a boost-config change between vouch and expiry
+/// must keep score accounting exact. Two overlapping vouches with *different*
+/// boosts (config changed from 10 to 5 between them). Expiring the older/larger
+/// vouch first must remove exactly its 10 boost, not clamp its successor's
+/// removal to zero (the drift the original per-record-baseline design had).
+#[test]
+fn test_boost_config_change_exact_older_larger_expired_first() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner); // boost 10
+    assert_eq!(ctx.reputation_score(), 10);
+
+    // Admin changes the global boost config between vouches (now 5).
+    ctx.set_configured_boost(5);
+    let mentor2 = Address::generate(&ctx.env);
+    ctx.client.set_mentor(&ctx.admin, &mentor2, &true);
+    ctx.client.vouch(&mentor2, &ctx.learner); // boost 5
+    assert_eq!(ctx.reputation_score(), 15);
+
+    // Expire the OLDER/LARGER vouch first — the exact scenario that drifted
+    // under the original clamp.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), 5);
+
+    // Expire the remaining vouch — must remove exactly its 5 boost.
+    ctx.client.expire_vouch(&mentor2, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), 0);
+}
+
+#[test]
+fn test_boost_config_change_exact_newer_smaller_expired_first() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner); // boost 10
+    assert_eq!(ctx.reputation_score(), 10);
+
+    ctx.set_configured_boost(5);
+    let mentor2 = Address::generate(&ctx.env);
+    ctx.client.set_mentor(&ctx.admin, &mentor2, &true);
+    ctx.client.vouch(&mentor2, &ctx.learner); // boost 5
+    assert_eq!(ctx.reputation_score(), 15);
+
+    // Expire the NEWER/SMALLER vouch first.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION + 1);
+    ctx.client.expire_vouch(&mentor2, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), 10);
+
+    // Expire the older/larger vouch.
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), 0);
+}
+
+/// `expire_vouch` must be idempotent for already-inactive records even within
+/// the TTL: calling it on a revoked (inactive) record is a no-op, not a
+/// `VouchNotExpired` panic.
+#[test]
+fn test_expire_vouch_on_revoked_record_is_noop_within_ttl() {
+    let ctx = TestCtx::setup();
+    ctx.client.set_mentor(&ctx.admin, &ctx.mentor, &true);
+    ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    ctx.client.vouch(&ctx.mentor, &ctx.learner);
+    ctx.client.revoke_vouch(&ctx.mentor, &ctx.learner);
+    assert_eq!(ctx.reputation_score(), 0);
+
+    // Still within TTL, but the record is already inactive (revoked) — no-op.
+    ctx.env
+        .ledger()
+        .with_mut(|l| l.timestamp = 1_000_000 + VOUCH_DURATION - 10);
+    ctx.client.expire_vouch(&ctx.mentor, &ctx.learner);
+
+    assert_eq!(ctx.reputation_score(), 0);
     let record = ctx.client.get_vouches(&ctx.learner).get_unchecked(0);
     assert!(!record.active);
 }

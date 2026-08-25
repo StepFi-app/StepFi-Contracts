@@ -14,10 +14,6 @@ pub struct VouchRecord {
     pub ts: u64,
     pub boost_amount: u32,
     pub active: bool,
-    /// Learner reputation score at vouch time, before this vouch's boost was
-    /// applied. Used to clamp boost removal so a learner's score never falls
-    /// below what they had without the vouch.
-    pub baseline: u32,
 }
 
 #[contracttype]
@@ -30,4 +26,12 @@ pub enum DataKey {
     Mentor(Address),
     Vouch(Address, Address),
     LearnerVouches(Address),
+    /// Learner reputation score before ANY active vouch's boost was applied.
+    /// Captured on the first vouch and shared by every overlapping vouch so
+    /// boost removal can be clamped to a single, stable floor.
+    LearnerBaseline(Address),
+    /// Aggregate boost currently contributed by all active vouches for a learner.
+    /// Lets removal stay exact and order-independent across overlapping vouches
+    /// and mid-life boost-config changes.
+    LearnerTotalBoost(Address),
 }

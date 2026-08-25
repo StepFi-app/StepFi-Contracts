@@ -65,21 +65,28 @@ impl VouchingContract {
 
         let boost_amount =
             storage::get_vouch_boost(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
-        // Capture the learner's score before this vouch's boost is applied so
-        // boost removal can be clamped to never drop them below this baseline.
-        let baseline = Self::get_reputation_score(&env, &learner);
+
+        // Capture the learner's true baseline (reputation before ANY active
+        // vouch) only when this is the first active vouch; overlapping vouches
+        // share the same floor so removal stays exact and order-independent.
+        let total = storage::get_total_vouch_boost(&env, &learner);
+        if total == 0 {
+            let baseline = Self::get_reputation_score(&env, &learner);
+            storage::set_learner_baseline(&env, &learner, baseline);
+        }
+
         let record = VouchRecord {
             mentor: mentor.clone(),
             learner: learner.clone(),
             ts: env.ledger().timestamp(),
             boost_amount,
             active: true,
-            baseline,
         };
 
         storage::set_vouch(&env, &record);
         storage::add_learner_mentor(&env, &learner, &mentor);
         Self::add_reputation_boost(&env, &learner, boost_amount);
+        storage::set_total_vouch_boost(&env, &learner, total + boost_amount);
         events::emit_mentor_vouched(&env, &mentor, &learner, boost_amount);
 
         Self::exit_non_reentrant(&env);
@@ -107,21 +114,26 @@ impl VouchingContract {
     /// Permissionlessly expire a vouch whose TTL has elapsed. Mirrors the
     /// permissionless `apply_late_fees()` pattern in `creditline`: anyone may
     /// trigger it, no auth required. Deactivates the record and removes its
-    /// boost (clamped to the recorded baseline). Idempotent — re-expiring an
-    /// already-inactive record is a no-op.
+    /// boost (clamped to the learner's shared baseline).
+    ///
+    /// Idempotent: an already-inactive record (revoked or previously expired)
+    /// is a no-op, even when called within the TTL. The TTL check only applies
+    /// to still-active records.
     pub fn expire_vouch(env: Env, mentor: Address, learner: Address) {
         let mut record = storage::get_vouch(&env, &mentor, &learner)
             .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // Already deactivated (revoked or previously expired). Idempotent no-op,
+        // independent of the TTL — checking this first means calling within the
+        // TTL on a revoked record returns cleanly instead of panicking.
+        if !record.active {
+            return;
+        }
 
         let now = env.ledger().timestamp();
         let expiry = record.ts.checked_add(VOUCH_DURATION).unwrap_or(u64::MAX);
         if expiry >= now {
             panic_with_error!(&env, VouchingError::VouchNotExpired);
-        }
-
-        // Already deactivated (revoked or previously expired). Idempotent no-op.
-        if !record.active {
-            return;
         }
 
         Self::enter_non_reentrant(&env);
@@ -236,16 +248,31 @@ impl VouchingContract {
     }
 
     /// Remove a vouch's boost, clamped so the learner's score never falls below
-    /// the baseline recorded at vouch time. Reading the live score lets us
-    /// tolerate penalties (or a mid-life boost-config change) without drifting
-    /// the learner's reputation below what they had without the vouch.
+    /// the shared baseline captured before any active vouch.
+    ///
+    /// Using the *shared* baseline (rather than a per-record baseline) plus the
+    /// aggregate `total_vouch_boost` makes removal exact and order-independent
+    /// across overlapping vouches and mid-life boost-config changes: we remove
+    /// exactly this vouch's `boost_amount` unless penalties (or a config change
+    /// combined with penalties) have already pushed the score to/under the
+    /// baseline, in which case nothing further is removed.
     fn remove_reputation_boost_clamped(env: &Env, learner: &Address, record: &VouchRecord) {
         let current = Self::get_reputation_score(env, learner);
-        let removable = current
-            .saturating_sub(record.baseline)
-            .min(record.boost_amount);
+        let baseline = storage::get_learner_baseline(env, learner).unwrap_or(current);
+        let total = storage::get_total_vouch_boost(env, learner);
+
+        let removable = current.saturating_sub(baseline).min(record.boost_amount);
+
         if removable > 0 {
             Self::remove_reputation_boost(env, learner, removable);
+        }
+
+        // Decrement the tracked aggregate by the full vouch amount (the vouch is
+        // now inactive). Clear the baseline once no active vouches remain.
+        let new_total = total.saturating_sub(record.boost_amount);
+        storage::set_total_vouch_boost(env, learner, new_total);
+        if new_total == 0 {
+            storage::clear_learner_baseline(env, learner);
         }
     }
 

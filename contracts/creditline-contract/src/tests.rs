@@ -3993,3 +3993,118 @@ fn test_200_loan_borrower_stress_and_storage_layout_regression() {
     assert_eq!(loan_201.status, LoanStatus::Paid);
 }
 
+#[test]
+fn test_storage_layout_entry_classes_instance_vs_persistent() {
+    let ctx = TestCtx::setup();
+    let borrower = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    ctx.register_vendor(&vendor, "Layout Vendor");
+    ctx.mint(&borrower, 10_000);
+
+    let due_date = ctx.env.ledger().timestamp() + 10_000;
+    let schedule = ctx.single_installment(DEFAULT_TOTAL_DUE, due_date);
+
+    let loan_id = ctx.client.create_loan(
+        &borrower,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Verify storage entry classification inside contract context
+    ctx.env.as_contract(&ctx.client.address, || {
+        let shard = (loan_id % 32) as u32;
+        let loan_key = crate::storage::DataKey::Loan(shard, loan_id);
+        let page_key = crate::storage::DataKey::UserLoanPage(borrower.clone(), 0);
+        let count_key = crate::storage::DataKey::UserLoanCount(borrower.clone());
+        let debt_key = crate::storage::DataKey::UserActiveDebt(borrower.clone());
+
+        // Assert all per-borrower and per-loan data keys reside strictly in PERSISTENT storage
+        assert!(ctx.env.storage().persistent().has(&loan_key), "Loan key must be in persistent storage");
+        assert!(ctx.env.storage().persistent().has(&page_key), "UserLoanPage key must be in persistent storage");
+        assert!(ctx.env.storage().persistent().has(&count_key), "UserLoanCount key must be in persistent storage");
+        assert!(ctx.env.storage().persistent().has(&debt_key), "UserActiveDebt key must be in persistent storage");
+
+        // Assert NONE of these keys leak into INSTANCE storage
+        assert!(!ctx.env.storage().instance().has(&loan_key), "Loan key must NOT be in instance storage");
+        assert!(!ctx.env.storage().instance().has(&page_key), "UserLoanPage key must NOT be in instance storage");
+        assert!(!ctx.env.storage().instance().has(&count_key), "UserLoanCount key must NOT be in instance storage");
+        assert!(!ctx.env.storage().instance().has(&debt_key), "UserActiveDebt key must NOT be in instance storage");
+    });
+}
+
+#[test]
+fn test_legacy_user_loan_at_backward_compatibility() {
+    let ctx = TestCtx::setup();
+    let borrower = Address::generate(&ctx.env);
+
+    // Manually write legacy UserLoanAt(borrower, idx) entries in persistent and instance storage
+    ctx.env.as_contract(&ctx.client.address, || {
+        let count_key = crate::storage::DataKey::UserLoanCount(borrower.clone());
+        ctx.env.storage().persistent().set(&count_key, &2u64);
+
+        let legacy_key_0 = crate::storage::DataKey::UserLoanAt(borrower.clone(), 0);
+        let legacy_key_1 = crate::storage::DataKey::UserLoanAt(borrower.clone(), 1);
+
+        ctx.env.storage().persistent().set(&legacy_key_0, &101u64);
+        ctx.env.storage().instance().set(&legacy_key_1, &102u64);
+
+        let ids = crate::storage::get_user_loan_ids_paginated(&ctx.env, &borrower, 0, 10).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), 101);
+        assert_eq!(ids.get(1).unwrap(), 102);
+    });
+}
+
+#[test]
+fn test_concurrent_active_debt_and_ttl_extension_mid_flow() {
+    let ctx = TestCtx::setup();
+    let borrower = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    ctx.register_vendor(&vendor, "Active Debt Vendor");
+
+    let num_loans = 4;
+    let guarantee_per_loan = 200i128;
+    let principal_per_loan = 1_000i128;
+    let total_due_per_loan = 1_050i128;
+
+    ctx.mint(&borrower, (num_loans as i128) * guarantee_per_loan);
+
+    let due_date = ctx.env.ledger().timestamp() + 10_000;
+    let schedule = ctx.single_installment(total_due_per_loan, due_date);
+
+    let mut created_ids = soroban_sdk::Vec::new(&ctx.env);
+    for i in 0..num_loans {
+        let loan_id = ctx.client.create_loan(
+            &borrower,
+            &vendor,
+            &principal_per_loan,
+            &guarantee_per_loan,
+            &schedule,
+            &LoanType::Standard,
+        );
+        assert_eq!(loan_id, (i + 1) as u64);
+        created_ids.push_back(loan_id);
+    }
+
+    // Verify concurrent active debt is accumulated across all 4 active loans
+    let expected_active_debt = (num_loans as i128) * total_due_per_loan;
+    assert_eq!(ctx.client.get_user_active_debt(&borrower), expected_active_debt);
+
+    // Advance ledger timestamp to exercise TTL extension mid-flow
+    ctx.env.ledger().set_timestamp(ctx.env.ledger().timestamp() + 5_000);
+
+    // Repay 2 of the active loans mid-flow
+    ctx.mint(&borrower, 2 * total_due_per_loan);
+    for i in 0..2 {
+        let loan_id = created_ids.get(i).unwrap();
+        ctx.client.repay_loan(&borrower, &loan_id, &total_due_per_loan);
+    }
+
+    // Active debt should decrease by exactly 2 * total_due_per_loan
+    let updated_active_debt = ((num_loans - 2) as i128) * total_due_per_loan;
+    assert_eq!(ctx.client.get_user_active_debt(&borrower), updated_active_debt);
+}
+

@@ -21,11 +21,12 @@ const LOAN_SHARD_COUNT: u32 = 32;
 
 #[contracttype]
 #[derive(Clone)]
-enum DataKey {
+pub enum DataKey {
     Loan(u32, u64),
     UserLoanCount(Address),
     UserLoanPage(Address, u32),
     UserActiveDebt(Address),
+    UserLoanAt(Address, u64), // Legacy un-chunked index key for backward compatibility
 }
 
 /// Get the admin address from storage
@@ -121,7 +122,19 @@ pub fn get_user_loan_ids_paginated(
                 offset += 1;
             }
         } else {
-            return Err(CreditLineError::LoanNotFound);
+            // Backward compatibility fallback for legacy un-chunked UserLoanAt(borrower, idx) entries
+            let legacy_key = DataKey::UserLoanAt(borrower.clone(), idx);
+            if let Some(loan_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, u64>(&legacy_key)
+                .or_else(|| env.storage().instance().get::<DataKey, u64>(&legacy_key))
+            {
+                result.push_back(loan_id);
+                idx += 1;
+            } else {
+                return Err(CreditLineError::LoanNotFound);
+            }
         }
     }
 

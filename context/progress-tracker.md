@@ -16,6 +16,16 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Storage Layout & Bounded Per-User Loan Index Chunking (creditline-contract)
+- **Problem:** Per-borrower loan indexes were previously stored without index vector caps, risking footprint and entry size bloat under high loan counts.
+- **Fix:** Changed storage key layout in `creditline-contract/src/storage.rs` from individual key index to fixed-size persistent pages `DataKey::UserLoanPage(Address, u32)` with `PAGE_SIZE = 32`.
+- Updated `append_user_loan_index` to append loan IDs to the current `UserLoanPage(borrower, page_num)` and immediately call `extend_ttl`.
+- Updated `get_user_loan_ids_paginated` to fetch across chunked page boundaries dynamically given zero-indexed `start` and `limit`.
+- Audited all persistent storage write paths (`write_loan`, `increase_user_active_debt`, `decrease_user_active_debt`, `append_user_loan_index`) ensuring every `.set()` call is paired with an immediate `extend_ttl`.
+- Documented pagination storage contract (`PAGE_SIZE = 32`) in `storage.rs` and `get_user_loans` API doc comments in `lib.rs`.
+- Added `test_200_loan_borrower_stress_and_storage_layout_regression` in `tests.rs` asserting that a 200-loan borrower can create loan #201, query loans across page boundaries (`0..32`, `32..64`, `30..40`, `200..201`), and repay loans without footprint or capacity errors.
+- Verified test suite: 125 tests passing in `creditline-contract`, full workspace suite green.
+
 ### Issue #58 — Principal-Interest-Fee Repayment Waterfall
 - Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
 - Fixed `repay_loan()` to use the corrected waterfall order (was principal-first, now late-fees-first)

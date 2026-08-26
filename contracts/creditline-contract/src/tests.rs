@@ -3915,3 +3915,81 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     assert_eq!(pool_stats.locked_liquidity, 0);
     assert!(pool_stats.total_liquidity > 0);
 }
+
+#[test]
+fn test_200_loan_borrower_stress_and_storage_layout_regression() {
+    let ctx = TestCtx::setup();
+    let borrower = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+
+    ctx.register_vendor(&vendor, "High Volume Vendor");
+
+    // Mint enough balance for 205 loan guarantees (205 * 200 = 41,000)
+    ctx.mint(&borrower, 50_000);
+
+    let due_date = ctx.env.ledger().timestamp() + 10_000;
+    let schedule = ctx.single_installment(DEFAULT_TOTAL_DUE, due_date);
+
+    // Create 200 loans for the single borrower (repaying each so active debt stays within exposure limit)
+    for i in 0..200 {
+        let loan_id = ctx.client.create_loan(
+            &borrower,
+            &vendor,
+            &DEFAULT_PRINCIPAL,
+            &DEFAULT_GUARANTEE,
+            &schedule,
+            &LoanType::Standard,
+        );
+        assert_eq!(loan_id, (i + 1) as u64);
+        ctx.mint(&borrower, DEFAULT_TOTAL_DUE);
+        ctx.client.repay_loan(&borrower, &loan_id, &DEFAULT_TOTAL_DUE);
+    }
+
+    assert_eq!(ctx.client.get_user_loan_count(&borrower), 200);
+
+    // Verify 201st loan creation succeeds without storage footprint or capacity failure
+    let loan_id_201 = ctx.client.create_loan(
+        &borrower,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+    assert_eq!(loan_id_201, 201);
+    assert_eq!(ctx.client.get_user_loan_count(&borrower), 201);
+
+    // Test paginated retrieval across page boundaries (PAGE_SIZE = 32)
+    // Page 0 (0..32)
+    let page_0_loans = ctx.client.get_user_loans(&borrower, &0, &32);
+    assert_eq!(page_0_loans.len(), 32);
+    assert_eq!(page_0_loans.get(0).unwrap().loan_id, 1);
+    assert_eq!(page_0_loans.get(31).unwrap().loan_id, 32);
+
+    // Page 1 (32..64)
+    let page_1_loans = ctx.client.get_user_loans(&borrower, &32, &32);
+    assert_eq!(page_1_loans.len(), 32);
+    assert_eq!(page_1_loans.get(0).unwrap().loan_id, 33);
+
+    // Cross-page boundary request (start=30, limit=10 -> loans 31..41)
+    let cross_page_loans = ctx.client.get_user_loans(&borrower, &30, &10);
+    assert_eq!(cross_page_loans.len(), 10);
+    assert_eq!(cross_page_loans.get(0).unwrap().loan_id, 31);
+    assert_eq!(cross_page_loans.get(9).unwrap().loan_id, 40);
+
+    // Tail page request (start=200, limit=10 -> loan 201)
+    let tail_loans = ctx.client.get_user_loans(&borrower, &200, &10);
+    assert_eq!(tail_loans.len(), 1);
+    assert_eq!(tail_loans.get(0).unwrap().loan_id, 201);
+
+    // Verify repaying a loan works cleanly for a 200+ loan borrower
+    ctx.mint(&borrower, DEFAULT_TOTAL_DUE);
+    let remaining = ctx
+        .client
+        .repay_loan(&borrower, &loan_id_201, &DEFAULT_TOTAL_DUE);
+    assert_eq!(remaining, 0);
+
+    let loan_201 = ctx.client.get_loan(&loan_id_201);
+    assert_eq!(loan_201.status, LoanStatus::Paid);
+}
+

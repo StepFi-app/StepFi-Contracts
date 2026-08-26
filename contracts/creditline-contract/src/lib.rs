@@ -167,6 +167,10 @@ impl CreditLineContract {
         Ok(loan_id)
     }
 
+    /// Retrieve loans for a borrower paginated across fixed-size persistent index pages (`PAGE_SIZE = 32`).
+    ///
+    /// - `start`: zero-based loan index offset.
+    /// - `limit`: max number of loans to return.
     pub fn get_user_loans(env: Env, borrower: Address, start: u64, limit: u32) -> Vec<Loan> {
         storage::get_user_loans_paginated(&env, &borrower, start, limit)
             .unwrap_or_else(|err| panic_with_error!(&env, err))

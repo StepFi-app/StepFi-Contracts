@@ -2780,3 +2780,46 @@ fn test_timelocked_upgrade_success_bumps_version() {
     }
     assert_eq!(upgraded_new, Some(2u32));
 }
+
+#[soroban_sdk::contract]
+pub struct MockParametersContract;
+
+#[soroban_sdk::contractimpl]
+impl MockParametersContract {
+    pub fn get_parameters(_env: Env) -> crate::types::ProtocolParameters {
+        crate::types::ProtocolParameters {
+            min_guarantee_percent: 20,
+            min_reputation_threshold: 50,
+            full_repayment_reward: 10,
+            default_penalty: 20,
+            large_loan_threshold: 5000,
+            large_loan_default_penalty: 30,
+            base_interest_bps: 0,
+            grace_period_seconds: 0,
+            upgrade_delay_seconds: 172_800, // 2 days (172,800 seconds)
+        }
+    }
+}
+
+#[test]
+fn test_upgrade_delay_parameterized_via_parameters_contract() {
+    let t = TestEnv::setup();
+    let params_id = t.env.register(MockParametersContract, ());
+    t.client.set_parameters_contract(&params_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&t.env, &[7u8; 32]);
+    t.client.propose_upgrade(&wasm_hash);
+
+    // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
+    t.env.ledger().set_timestamp(86_401);
+    let res = t.client.try_execute_upgrade(&wasm_hash);
+    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::UpgradeTimelockNotMet as u32);
+    assert_eq!(res, Err(Ok(expected_err)));
+
+    // Advance past custom 2-day delay (172,801s)
+    t.env.ledger().set_timestamp(172_801);
+    let wasm_real = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&t.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    t.client.propose_upgrade(&wasm_real);
+    t.env.ledger().set_timestamp(172_801 + 172_801);
+    t.client.execute_upgrade(&wasm_real);
+}

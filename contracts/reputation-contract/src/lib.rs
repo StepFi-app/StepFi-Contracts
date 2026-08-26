@@ -208,15 +208,23 @@ impl ReputationContract {
         }
     }
 
+    pub fn set_parameters_contract(env: Env, address: Address) {
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        admin.require_auth();
+        storage::set_parameters_contract(&env, &address);
+    }
+
     /// Propose a timelocked contract WASM upgrade — admin only
     pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
 
+        let delay = Self::get_upgrade_delay_seconds(&env);
         let proposed_at = env.ledger().timestamp();
         let unlock_at = proposed_at
-            .checked_add(storage::DEFAULT_UPGRADE_DELAY_SECONDS)
+            .checked_add(delay)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ReputationError::Overflow));
 
         let pending = types::PendingUpgrade {
@@ -268,6 +276,22 @@ impl ReputationContract {
     }
     pub fn get_admin(env: Env) -> Result<Address, ReputationError> {
         storage::get_admin(&env)
+    }
+
+    fn get_upgrade_delay_seconds(env: &Env) -> u64 {
+        use soroban_sdk::IntoVal;
+        if let Ok(Some(params_addr)) = storage::get_parameters_contract(env) {
+            if let Ok(Ok(params)) = env.try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
+                &params_addr,
+                &soroban_sdk::Symbol::new(env, "get_parameters"),
+                ().into_val(env),
+            ) {
+                if params.upgrade_delay_seconds > 0 {
+                    return params.upgrade_delay_seconds;
+                }
+            }
+        }
+        storage::DEFAULT_UPGRADE_DELAY_SECONDS
     }
 
     fn enter_non_reentrant(env: &Env) {

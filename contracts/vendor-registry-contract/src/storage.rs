@@ -104,3 +104,14 @@ pub fn set_pending_upgrade(env: &Env, upgrade: &crate::types::PendingUpgrade) {
 pub fn clear_pending_upgrade(env: &Env) {
     env.storage().instance().remove(&PENDING_UPGRADE_KEY);
 }
+
+// --- Parameters Contract ---
+pub const PARAMETERS_CONTRACT_KEY: soroban_sdk::Symbol = symbol_short!("PARAMS");
+
+pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, Error> {
+    Ok(env.storage().instance().get(&PARAMETERS_CONTRACT_KEY))
+}
+
+pub fn set_parameters_contract(env: &Env, address: &Address) {
+    env.storage().instance().set(&PARAMETERS_CONTRACT_KEY, address);
+}

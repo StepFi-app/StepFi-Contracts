@@ -3945,3 +3945,47 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     assert_eq!(pool_stats.locked_liquidity, 0);
     assert!(pool_stats.total_liquidity > 0);
 }
+
+#[soroban_sdk::contract]
+pub struct MockParametersContract;
+
+#[soroban_sdk::contractimpl]
+impl MockParametersContract {
+    pub fn get_parameters(_env: Env) -> crate::types::ProtocolParameters {
+        crate::types::ProtocolParameters {
+            min_guarantee_percent: 20,
+            min_reputation_threshold: 50,
+            full_repayment_reward: 10,
+            default_penalty: 20,
+            large_loan_threshold: 5000,
+            large_loan_default_penalty: 30,
+            base_interest_bps: 0,
+            grace_period_seconds: 0,
+            upgrade_delay_seconds: 172_800, // 2 days
+        }
+    }
+}
+
+#[test]
+fn test_creditline_upgrade_delay_parameterized_via_parameters_contract() {
+    let ctx = TestCtx::setup();
+
+    let params_id = ctx.env.register(MockParametersContract, ());
+    ctx.client.set_parameters_contract(&ctx.admin, &params_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[7u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash);
+
+    // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
+    ctx.env.ledger().set_timestamp(86_401);
+    let res = ctx.client.try_execute_upgrade(&wasm_hash);
+    let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::UpgradeTimelockNotMet as u32);
+    assert_eq!(res, Err(Ok(expected_err)));
+
+    // Advance past custom 2-day delay (172,801s)
+    ctx.env.ledger().set_timestamp(172_801);
+    let wasm_real = ctx.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&ctx.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    ctx.client.propose_upgrade(&wasm_real);
+    ctx.env.ledger().set_timestamp(172_801 + 172_801);
+    ctx.client.execute_upgrade(&wasm_real);
+}

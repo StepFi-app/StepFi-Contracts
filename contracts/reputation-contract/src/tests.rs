@@ -1402,3 +1402,53 @@ fn it_allows_setting_score_to_current_value() {
     client.set_score(&updater, &user, &75);
     assert_eq!(client.get_score(&user), 75);
 }
+
+#[soroban_sdk::contract]
+pub struct MockParametersContract;
+
+#[soroban_sdk::contractimpl]
+impl MockParametersContract {
+    pub fn get_parameters(_env: Env) -> crate::types::ProtocolParameters {
+        crate::types::ProtocolParameters {
+            min_guarantee_percent: 20,
+            min_reputation_threshold: 50,
+            full_repayment_reward: 10,
+            default_penalty: 20,
+            large_loan_threshold: 5000,
+            large_loan_default_penalty: 30,
+            base_interest_bps: 0,
+            grace_period_seconds: 0,
+            upgrade_delay_seconds: 172_800, // 2 days
+        }
+    }
+}
+
+#[test]
+fn test_reputation_upgrade_delay_parameterized_via_parameters_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let params_id = env.register(MockParametersContract, ());
+    client.set_parameters_contract(&params_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[7u8; 32]);
+    client.propose_upgrade(&wasm_hash);
+
+    // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
+    env.ledger().set_timestamp(86_401);
+    let res = client.try_execute_upgrade(&wasm_hash);
+    let expected_err = soroban_sdk::Error::from_contract_error(ReputationError::UpgradeTimelockNotMet as u32);
+    assert_eq!(res, Err(Ok(expected_err)));
+
+    // Advance past custom 2-day delay (172,801s)
+    env.ledger().set_timestamp(172_801);
+    let wasm_real = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    client.propose_upgrade(&wasm_real);
+    env.ledger().set_timestamp(172_801 + 172_801);
+    client.execute_upgrade(&wasm_real);
+}

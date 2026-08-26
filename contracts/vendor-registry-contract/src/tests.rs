@@ -440,7 +440,7 @@ fn test_upgrade_rejected_for_non_admin() {
 #[test]
 fn test_admin_upgrade_increments_version_and_emits_event() {
     let env = Env::default();
-    let (client, admin, _vendor) = setup(&env);
+    let (client, _admin, _vendor) = setup(&env);
     env.mock_all_auths();
 
     assert_eq!(client.get_version(), 1u32);
@@ -448,7 +448,9 @@ fn test_admin_upgrade_increments_version_and_emits_event() {
         &env,
         include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
     ));
-    client.upgrade(&wasm_hash);
+    client.propose_upgrade(&wasm_hash);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash);
 
     let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
     let mut found = false;
@@ -460,4 +462,41 @@ fn test_admin_upgrade_increments_version_and_emits_event() {
         }
     }
     assert!(found, "CONTRACTUPGRADED event not found");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_vendor_registry_upgrade_without_propose_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_vendor_registry_upgrade_before_timelock_elapses_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    client.propose_upgrade(&wasm_hash);
+    client.execute_upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_vendor_registry_upgrade_with_wrong_hash_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let wasm_hash2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+    client.propose_upgrade(&wasm_hash1);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash2);
 }

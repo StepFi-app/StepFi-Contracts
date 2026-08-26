@@ -14,4 +14,7 @@ pub enum Error {
     ReentrancyDetected = 8,
     Underflow = 9,
     VendorNotPending = 10,
+    UpgradeNotProposed = 11,
+    UpgradeTimelockNotMet = 12,
+    UpgradeHashMismatch = 13,
 }

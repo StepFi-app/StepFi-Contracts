@@ -23,3 +23,12 @@ pub const SHARE_PRICE_PRECISION: i128 = 10_000;
 
 /// Minimum deposit / withdrawal to prevent rounding exploits
 pub const MIN_AMOUNT: i128 = 1;
+
+/// Pending timelocked contract upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+    pub proposed_at: u64,
+    pub unlock_at: u64,
+}

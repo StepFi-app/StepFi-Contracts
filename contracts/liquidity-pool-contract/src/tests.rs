@@ -1,6 +1,6 @@
 use crate::{LiquidityPoolContract, LiquidityPoolContractClient, LiquidityPoolError};
 use soroban_sdk::{
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, IntoVal,
 };
@@ -444,7 +444,9 @@ fn test_admin_upgrade_bumps_version() {
         &t.env,
         include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
     ));
-    t.client.upgrade(&wasm_hash);
+    t.client.propose_upgrade(&wasm_hash);
+    t.env.ledger().set_timestamp(86_401);
+    t.client.execute_upgrade(&wasm_hash);
 
     // event observed
     let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
@@ -2724,4 +2726,57 @@ fn test_absorb_loss_emits_event() {
 
     let events = t.env.events().all();
     assert!(!events.is_empty(), "Expected LQLOSS event to be emitted");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_upgrade_without_propose_fails() {
+    let t = TestEnv::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&t.env, &[1u8; 32]);
+    t.client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_upgrade_before_timelock_elapses_fails() {
+    let t = TestEnv::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&t.env, &[1u8; 32]);
+    t.client.propose_upgrade(&wasm_hash);
+    t.client.execute_upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_upgrade_with_wrong_hash_fails() {
+    let t = TestEnv::setup();
+    let wasm_hash1 = soroban_sdk::BytesN::from_array(&t.env, &[1u8; 32]);
+    let wasm_hash2 = soroban_sdk::BytesN::from_array(&t.env, &[2u8; 32]);
+    t.client.propose_upgrade(&wasm_hash1);
+    t.env.ledger().set_timestamp(86_401);
+    t.client.execute_upgrade(&wasm_hash2);
+}
+
+#[test]
+fn test_timelocked_upgrade_success_bumps_version() {
+    let t = TestEnv::setup();
+    assert_eq!(t.client.get_version(), 1);
+
+    let wasm_hash = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&t.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    t.client.propose_upgrade(&wasm_hash);
+
+    // Advance past 1-day timelock delay (86,400 seconds)
+    t.env.ledger().set_timestamp(86_401);
+    t.client.execute_upgrade(&wasm_hash);
+
+    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
+    let mut upgraded_new: Option<u32> = None;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
+        if topic == soroban_sdk::Symbol::new(&t.env, "CONTRACTUPGRADED") {
+            let (_old, new_v, _ts): (u32, u32, u64) = e.2.into_val(&t.env);
+            upgraded_new = Some(new_v);
+            break;
+        }
+    }
+    assert_eq!(upgraded_new, Some(2u32));
 }

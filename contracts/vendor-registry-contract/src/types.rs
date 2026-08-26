@@ -29,3 +29,12 @@ pub struct VendorInfo {
     pub status: VendorStatus,
     pub total_sales: u64,
 }
+
+/// Pending timelocked contract upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+    pub proposed_at: u64,
+    pub unlock_at: u64,
+}

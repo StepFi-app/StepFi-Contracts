@@ -27,3 +27,12 @@ pub struct AdminChanged {
 #[allow(dead_code)]
 pub const MIN_SCORE: u32 = 0;
 pub const MAX_SCORE: u32 = 100;
+
+/// Pending timelocked contract upgrade proposal
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+    pub proposed_at: u64,
+    pub unlock_at: u64,
+}

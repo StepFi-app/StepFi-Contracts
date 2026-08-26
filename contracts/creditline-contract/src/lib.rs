@@ -194,18 +194,66 @@ impl CreditLineContract {
         storage::set_admin(&env, &new_admin);
     }
 
-    /// Upgrade the contract WASM — admin only
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+    /// Propose a timelocked contract WASM upgrade — admin only
+    pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
 
-        // bump stored version and emit event
+        let params = Self::get_protocol_parameters(&env);
+        let delay = if params.upgrade_delay_seconds > 0 {
+            params.upgrade_delay_seconds
+        } else {
+            storage::DEFAULT_UPGRADE_DELAY_SECONDS
+        };
+
+        let proposed_at = env.ledger().timestamp();
+        let unlock_at = proposed_at
+            .checked_add(delay)
+            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::Overflow));
+
+        let pending = types::PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            proposed_at,
+            unlock_at,
+        };
+        storage::set_pending_upgrade(&env, &pending);
+        events::emit_upgrade_proposed(&env, &new_wasm_hash, proposed_at, unlock_at);
+    }
+
+    /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
+    pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let pending = storage::get_pending_upgrade(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+            .ok_or(CreditLineError::UpgradeNotProposed)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        if pending.wasm_hash != new_wasm_hash {
+            panic_with_error!(&env, CreditLineError::UpgradeHashMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < pending.unlock_at {
+            panic_with_error!(&env, CreditLineError::UpgradeTimelockNotMet);
+        }
+
         let old_version = storage::get_version(&env).unwrap_or(1u32);
-        let new_version = old_version.checked_add(1).unwrap_or(old_version);
+        let new_version = old_version
+            .checked_add(1)
+            .ok_or(CreditLineError::Overflow)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_version(&env, new_version);
 
+        storage::clear_pending_upgrade(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::emit_contract_upgraded(&env, old_version, new_version);
+    }
+
+    /// Upgrade the contract WASM — admin only (enforces prior propose_upgrade timelock)
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::execute_upgrade(env, new_wasm_hash);
     }
     pub fn get_admin(env: Env) -> Result<Address, CreditLineError> {
         storage::get_admin(&env)

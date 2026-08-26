@@ -567,7 +567,9 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
     client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
     let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
-    client.upgrade(&wasm_hash);
+    client.propose_upgrade(&wasm_hash);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash);
 
     use soroban_sdk::IntoVal;
     let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
@@ -581,6 +583,34 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
         }
     }
     assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_creditline_upgrade_without_propose_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    ctx.client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #29)")]
+fn test_creditline_upgrade_before_timelock_elapses_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash);
+    ctx.client.execute_upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #30)")]
+fn test_creditline_upgrade_with_wrong_hash_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash1 = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    let wasm_hash2 = soroban_sdk::BytesN::from_array(&ctx.env, &[2u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash1);
+    ctx.env.ledger().set_timestamp(86_401);
+    ctx.client.execute_upgrade(&wasm_hash2);
 }
 
 fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {

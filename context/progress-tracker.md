@@ -16,6 +16,15 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Timelocked Contract Upgrades & Version Overflow Safety
+- Routed WASM upgrades through a mandatory two-step timelock (`propose_upgrade` → delay → `execute_upgrade`) across `liquidity-pool-contract`, `creditline-contract`, `reputation-contract`, and `vendor-registry-contract`.
+- Parameterized upgrade delay via `ProtocolParameters` in `parameters-contract` (field `upgrade_delay_seconds: u64`, defaulting to 86,400 seconds / 1 day).
+- Enforced exact committed `wasm_hash` matching and unlock timestamp verification prior to WASM update.
+- Replaced saturating `unwrap_or(old_version)` version increment with `checked_add(1).ok_or(Overflow)`.
+- Emitted `UPGDPRP` (upgrade proposed) and `CONTRACTUPGRADED` events at both steps.
+- Direct `upgrade()` function restricted to call `execute_upgrade()`, enforcing timelocked commit requirements on existing callers.
+- Added comprehensive unit tests in each contract asserting unproposed upgrade fails (`UpgradeNotProposed`), early execution fails (`UpgradeTimelockNotMet`), hash mismatch fails (`UpgradeHashMismatch`), and elapsed execution succeeds and bumps version monotonically.
+
 ### Issue #58 — Principal-Interest-Fee Repayment Waterfall
 - Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
 - Fixed `repay_loan()` to use the corrected waterfall order (was principal-first, now late-fees-first)

@@ -32,4 +32,7 @@ pub enum CreditLineError {
     InvalidLoanStatus = 25,
     NotInitialized = 26,
     InvalidDueDate = 27,
+    UpgradeNotProposed = 28,
+    UpgradeTimelockNotMet = 29,
+    UpgradeHashMismatch = 30,
 }

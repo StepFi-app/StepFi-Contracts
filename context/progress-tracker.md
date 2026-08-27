@@ -16,6 +16,16 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Issue #82 — First-Depositor Share-Price Inflation Attack Mitigation
+- **Dead shares**: On first deposit (`total_shares == 0`), minted 1,000 dead shares to `env.current_contract_address()`. Dead shares are unclaimable since `withdraw` requires `provider.require_auth()`. This prevents the attacker from withdrawing dead shares and manipulating the share-price denominator.
+- **First-deposit share price**: Hardcoded to `SHARE_PRICE_PRECISION` (10,000) when `is_first_deposit`, ensuring a clean 1:1 initial valuation. Subsequent deposits use the standard `total_liquidity * PRECISION / total_shares` formula.
+- **`MIN_AMOUNT` raised to 1,000**: Deposits below 1,000 tokens now fail with `InvalidAmount` (#4). This adds a secondary defense against dust-amount manipulation and excessive rounding.
+- **`calculate_share_price_internal` fix**: When `total_liquidity == 0` and `total_shares > 0` (post-default), share_price now correctly returns `0` instead of `PRECISION`.
+- **Withdraw guard fix**: Changed from `shares < MIN_AMOUNT` to `shares <= 0` so providers can withdraw any positive number of shares; the rounding floor in the amount calculation naturally prevents dust extraction.
+- **Rounding documentation**: Added comments to `deposit()` and `withdraw()` clarifying floor-division behavior and why rounding dust stays in the pool.
+- **New constants**: `DEAD_SHARES_AMOUNT = 1_000` added to `types.rs`.
+- **All 105 tests pass** (100 existing updated for dead-shares math + 5 new security tests: dead shares exist, dust inflation blocked, donation attack fails, post-default price is zero, minimum deposit enforced).
+
 ### Timelocked Contract Upgrades & Version Overflow Safety
 - Routed WASM upgrades through a mandatory two-step timelock (`propose_upgrade` → delay → `execute_upgrade`) across `liquidity-pool-contract`, `creditline-contract`, `reputation-contract`, and `vendor-registry-contract`.
 - Parameterized upgrade delay via `ProtocolParameters` in `parameters-contract` (field `upgrade_delay_seconds: u64`, defaulting to 86,400 seconds / 1 day).

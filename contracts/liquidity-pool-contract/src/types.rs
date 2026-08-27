@@ -21,8 +21,16 @@ pub const TOTAL_BPS: i128 = 10000;
 /// Precision used for share price calculation (10000 = 1.0)
 pub const SHARE_PRICE_PRECISION: i128 = 10_000;
 
-/// Minimum deposit / withdrawal to prevent rounding exploits
-pub const MIN_AMOUNT: i128 = 1;
+/// Minimum deposit / withdrawal amount to prevent dust attacks and rounding exploits.
+/// On first deposit this also determines the number of dead (unclaimable) shares
+/// seeded into the pool so a single dust depositor cannot own 100 % of the pool.
+pub const MIN_AMOUNT: i128 = 1_000;
+
+/// Number of dead shares minted to the contract address on the very first deposit.
+/// Dead shares are unclaimable (no account holds them) and permanently inflate
+/// the denominator in the share-price formula, making first-depositor
+/// inflation attacks economically unprofitable.
+pub const DEAD_SHARES_AMOUNT: i128 = 1_000;
 
 /// Pending timelocked contract upgrade proposal
 #[contracttype]

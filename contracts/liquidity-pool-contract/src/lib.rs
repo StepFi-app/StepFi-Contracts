@@ -162,7 +162,26 @@ impl LiquidityPoolContract {
 
         Self::enter_non_reentrant(&env);
 
-        let share_price = Self::calculate_share_price_internal(&env)?;
+        // Seed dead (unclaimable) shares on the very first deposit so a dust
+        // depositor cannot own 100 % of a yield-bearing pool.
+        let total_shares = storage::get_total_shares(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let is_first_deposit = total_shares == 0;
+
+        if is_first_deposit {
+            // Mint dead shares to the contract itself — nobody can withdraw
+            // them because `withdraw` requires `provider.require_auth()`.
+            storage::set_total_shares(&env, types::DEAD_SHARES_AMOUNT);
+        }
+
+        // For the first deposit total_liquidity is 0 so the generic formula
+        // would divide-by-zero.  Use PRECISION directly (1:1 share → token).
+        let share_price = if is_first_deposit {
+            types::SHARE_PRICE_PRECISION
+        } else {
+            Self::calculate_share_price_internal(&env)?
+        };
+        // Floor-division: depositor always receives fewer shares, never more.
         let shares_issued = safe_math::div_i128(
             safe_math::mul_i128(amount, types::SHARE_PRICE_PRECISION)?,
             share_price,
@@ -180,7 +199,7 @@ impl LiquidityPoolContract {
         let new_shares = safe_math::add_i128(provider_shares, shares_issued)?;
         storage::set_lp_shares(&env, &provider, new_shares);
 
-        // Update total shares
+        // Update total shares (includes dead shares)
         let total_shares = storage::get_total_shares(&env)
             .unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_total_shares = safe_math::add_i128(total_shares, shares_issued)?;
@@ -210,7 +229,7 @@ impl LiquidityPoolContract {
     pub fn withdraw(env: Env, provider: Address, shares: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
 
-        if shares < types::MIN_AMOUNT {
+        if shares <= 0 {
             return Err(LiquidityPoolError::InvalidAmount);
         }
 
@@ -223,6 +242,8 @@ impl LiquidityPoolContract {
         }
 
         let share_price = Self::calculate_share_price_internal(&env)?;
+        // Floor-division: the pool always keeps the rounding remainder —
+        // the provider receives slightly fewer tokens, never more.
         let amount_returned = safe_math::div_i128(
             safe_math::mul_i128(shares, share_price)?,
             types::SHARE_PRICE_PRECISION,
@@ -626,9 +647,20 @@ impl LiquidityPoolContract {
     fn calculate_share_price_internal(env: &Env) -> Result<i128, LiquidityPoolError> {
         let total_shares = storage::get_total_shares(env)?;
         let total_liquidity = storage::get_total_liquidity(env)?;
-        if total_shares == 0 || total_liquidity == 0 {
+
+        // Empty pool (no shares at all) — price defaults to 1.0.
+        if total_shares == 0 {
             return Ok(types::SHARE_PRICE_PRECISION);
         }
+
+        // Shares exist but total_liquidity was drained (e.g. after absorb_loss
+        // absorbed the entire pool).  The price must reflect the realized loss
+        // rather than resetting to 1.0.
+        if total_liquidity == 0 {
+            return Ok(0);
+        }
+
+        // Floor-division: the pool always keeps the rounding remainder.
         safe_math::div_i128(
             safe_math::mul_i128(total_liquidity, types::SHARE_PRICE_PRECISION)?,
             total_shares,

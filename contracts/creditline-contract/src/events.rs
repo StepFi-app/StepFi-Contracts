@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const LOAN_FUNDED: Symbol = symbol_short!("LOANFNDD");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
 
@@ -18,6 +19,27 @@ pub fn emit_loan_approved(env: &Env, loan_id: u64) {
     let topics = (Symbol::new(env, LOANAPPROVED), loan_id);
     env.events().publish(topics, ());
 }
+
+/// Emit a loan funded event upon approval path funding
+pub fn emit_loan_funded(
+    env: &Env,
+    user: &Address,
+    vendor: &Address,
+    loan_id: u64,
+    total_amount: i128,
+    guarantee_amount: i128,
+) {
+    env.events().publish(
+        (LOAN_FUNDED, user, vendor),
+        (
+            loan_id,
+            total_amount,
+            guarantee_amount,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
 
 /// Emit a loan created event
 pub fn emit_loan_created(

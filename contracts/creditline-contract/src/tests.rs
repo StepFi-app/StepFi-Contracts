@@ -3890,7 +3890,7 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     token_sac.mint(&lp, &10_000);
     lp_client.deposit(&lp, &10_000);
 
-    let share_price_before = lp_client.get_pool_stats().share_price;
+    let _share_price_before = lp_client.get_pool_stats().share_price;
 
     // Create and default a loan
     let user = Address::generate(&env);
@@ -3933,12 +3933,12 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     cl_client.mark_defaulted(&loan_id);
 
     let share_price_after = lp_client.get_pool_stats().share_price;
-    // Before default: total=10_000, shares=10_000, share_price=10_000
+    // Before default: total=10_000, shares=11_000 (10_000 + 1_000 dead), share_price=9_090
     // After fund_loan(800): total=10_000, locked=800 (share_price unchanged)
     // After receive_guarantee(200): total=10_200, locked=600
     // After absorb_loss(800): total=9_400, locked=0
-    // share_price = 9_400 * 10_000 / 10_000 = 9_400
-    assert_eq!(share_price_after, 9_400);
+    // share_price = 9_400 * 10_000 / 11_000 = 8_545
+    assert_eq!(share_price_after, 8_545);
 
     // Verify pool can still pay LP withdrawals (no unreachable locked liquidity)
     let pool_stats = lp_client.get_pool_stats();

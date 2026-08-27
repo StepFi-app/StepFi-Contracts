@@ -3306,6 +3306,148 @@ fn test_approve_loan_rejects_past_due_date() {
     t.client.approve_loan(&loan_id);
 }
 
+#[test]
+fn test_approve_loan_funds_vendor_and_locks_pool_liquidity() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let pending = t.client.get_loan(&loan_id);
+    assert_eq!(pending.status, LoanStatus::Pending);
+    assert_eq!(pending.funded_at, 0);
+    assert_eq!(t.client.get_user_active_debt(&user), 0);
+
+    t.env.ledger().set_timestamp(100);
+    let approved = t.client.approve_loan(&loan_id);
+    assert_eq!(approved.status, LoanStatus::Active);
+    assert_eq!(approved.funded_at, 100);
+    assert!(t.was_fund_loan_called());
+    assert_eq!(
+        t.client.get_user_active_debt(&user),
+        approved.remaining_balance
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // InsufficientLiquidity = 5
+fn test_approve_loan_rejected_when_insufficient_liquidity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let rep_id = env.register(MockReputation, ());
+    let vendor_registry_id = env.register(VendorRegistryContract, ());
+
+    use soroban_sdk::{IntoVal, Symbol};
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "initialize"),
+        (&admin,).into_val(&env),
+    );
+
+    let lp_id = env.register(MockLiquidityPoolEmpty, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+
+    let user = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    let vendor_name = SorobanString::from_str(&env, "Test Vendor");
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "register_vendor"),
+        (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
+    );
+
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&user, &DEFAULT_GUARANTEE);
+
+    let due_date = env.ledger().timestamp() + 10_000;
+    let mut schedule = soroban_sdk::Vec::new(&env);
+    schedule.push_back(RepaymentInstallment {
+        amount: DEFAULT_TOTAL_DUE,
+        due_date,
+        paid: false,
+        paid_at: 0,
+    });
+
+    let loan_id = client.request_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Approval must fail with InsufficientLiquidity because pool is empty
+    client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")] // VendorNotActive = 3
+fn test_approve_loan_rejected_when_vendor_suspended() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // Admin suspends the vendor after the loan request was submitted
+    use soroban_sdk::{IntoVal, Symbol};
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = t.env.invoke_contract(
+        &t.vendor_registry_id,
+        &Symbol::new(&t.env, "suspend_vendor"),
+        (&t.admin, &vendor).into_val(&t.env),
+    );
+
+    // Approval must be rejected because vendor is now suspended
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // InsufficientReputation = 4
+fn test_approve_loan_rejected_when_reputation_decayed() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // Decrease score below min threshold (100 - 60 = 40 < 50 threshold)
+    MockReputationClient::new(&t.env, &t.rep_id).decrease_score(&t.admin, &user, &60);
+
+    // Approval must be rejected due to insufficient reputation
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #25)")] // InvalidLoanStatus
+fn test_approve_loan_double_funding_impossible() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // First approval succeeds
+    let approved = t.client.approve_loan(&loan_id);
+    assert_eq!(approved.status, LoanStatus::Active);
+
+    // Second approval must fail (double funding impossible)
+    t.client.approve_loan(&loan_id);
+}
+
 // ─── is_on_time helper tests ──────────────────────────────────────────────────
 
 #[test]

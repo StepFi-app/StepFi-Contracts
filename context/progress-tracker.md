@@ -16,6 +16,14 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### `approve_loan` Pending Loan Funding & Re-Validation Fix
+- **Problem:** `approve_loan()` previously activated pending loans without validating vendor status, checking reputation score, or checking available pool liquidity, and without calling `fund_loan()` on the liquidity pool to lock contribution funds or transferring funds to the vendor.
+- **Fix (`creditline-contract`):**
+  - Refactored shared pool funding logic into internal helper `fund_loan_from_pool(&env, borrower, vendor, guarantee_amount, pool_contribution, pull_guarantee)` used by both `create_loan` (`pull_guarantee = true`) and `approve_loan` (`pull_guarantee = false`).
+  - Extended `approve_loan()` to re-validate vendor status (`validate_vendor`), borrower reputation (`validate_reputation`), and pool liquidity (`validate_liquidity`) at approval time before mutating state.
+  - Extended `approve_loan()` to set `funded_at`, increment `user_active_debt`, lock pool funds via `fund_loan_from_pool`, write persistent loan record with TTL extension, and emit both `LOANAPPROVED` and `LOANFNDD` (`LoanFunded`) events.
+  - Added new unit tests covering: vendor funding and liquidity locking on approval, insufficient liquidity rejection (`InsufficientLiquidity`), suspended vendor approval rejection (`VendorNotActive`), decayed reputation approval rejection (`InsufficientReputation`), and double-funding prevention (`InvalidLoanStatus`).
+
 ### Timelocked Contract Upgrades & Version Overflow Safety
 - Routed WASM upgrades through a mandatory two-step timelock (`propose_upgrade` → delay → `execute_upgrade`) across `liquidity-pool-contract`, `creditline-contract`, `reputation-contract`, and `vendor-registry-contract`.
 - Parameterized upgrade delay via `ProtocolParameters` in `parameters-contract` (field `upgrade_delay_seconds: u64`, defaulting to 86,400 seconds / 1 day).

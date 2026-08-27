@@ -106,7 +106,7 @@ impl CreditLineContract {
         storage::write_loan(&env, &loan);
 
         let pool_contribution = safe_math::sub_i128(total_amount, guarantee_amount)?;
-        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution);
+        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution, true);
 
         events::emit_loan_created(
             &env,
@@ -378,17 +378,20 @@ impl CreditLineContract {
         vendor: &Address,
         guarantee_amount: i128,
         pool_contribution: i128,
+        pull_guarantee: bool,
     ) {
         let liquidity_pool = storage::get_liquidity_pool(env)
             .unwrap_or_else(|err| panic_with_error!(env, err))
             .unwrap_or_else(|| panic_with_error!(env, CreditLineError::InsufficientLiquidity));
 
-        let token_address = storage::get_token(env)
-            .unwrap_or_else(|err| panic_with_error!(env, err))
-            .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
+        if pull_guarantee {
+            let token_address = storage::get_token(env)
+                .unwrap_or_else(|err| panic_with_error!(env, err))
+                .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
 
-        let token_client = token::Client::new(env, &token_address);
-        token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+            let token_client = token::Client::new(env, &token_address);
+            token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+        }
 
         if pool_contribution > 0 {
             let lp_client = LiquidityPoolContractClient::new(env, &liquidity_pool);
@@ -646,14 +649,52 @@ impl CreditLineContract {
             }
         }
 
-        // 4. Transition to Active
-        loan.status = LoanStatus::Active;
+        // 4. Re-validate vendor status, borrower reputation, and liquidity availability at approval time
+        Self::validate_vendor(&env, &loan.vendor)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_reputation(&env, &loan.borrower)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_liquidity(&env, loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
-        // 5. Write back with TTL extension
+        // 5. Enter non-reentrant section
+        Self::enter_non_reentrant(&env);
+
+        // 6. Transition status to Active and record funded_at
+        loan.status = LoanStatus::Active;
+        loan.funded_at = env.ledger().timestamp();
+
+        // 7. Increment user active debt
+        storage::increase_user_active_debt(&env, &loan.borrower, loan.remaining_balance)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // 8. Fund loan contribution from liquidity pool (guarantee was already transferred at request)
+        let pool_contribution = safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::fund_loan_from_pool(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan.guarantee_amount,
+            pool_contribution,
+            false,
+        );
+
+        // 9. Write back with TTL extension
         storage::write_loan(&env, &loan);
 
-        // 6. Emit event
+        // 10. Emit events
         events::emit_loan_approved(&env, loan_id);
+        events::emit_loan_funded(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan_id,
+            loan.total_amount,
+            loan.guarantee_amount,
+        );
+
+        Self::exit_non_reentrant(&env);
 
         loan
     }

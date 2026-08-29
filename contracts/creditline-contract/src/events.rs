@@ -197,3 +197,16 @@ pub fn emit_upgrade_proposed(
         (wasm_hash.clone(), proposed_at, unlock_at),
     );
 }
+
+/// Emit an event when a cross-contract reputation score update fails.
+pub fn emit_score_update_failed(
+    env: &Env,
+    borrower: &Address,
+    is_increase: bool,
+    amount: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "ScoreUpdateFailed"), borrower.clone()),
+        (is_increase, amount, env.ledger().timestamp()),
+    );
+}

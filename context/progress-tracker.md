@@ -185,6 +185,19 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Recently Fixed
 
+### Security: Strict Error Handling & Atomic Invariant for Reputation Contract Calls
+- **Problem:** `mark_defaulted()` and `handle_reputation_increase()` in `creditline-contract` used fire-and-forget `let _ = env.try_invoke_contract(...)` calls, discarding reputation contract errors. A reverting reputation contract (e.g. revoked updater status, TTL expiry, or WASM mismatch) allowed loans to settle/default while score mutations silently failed, creating state-reputation divergence.
+- **Fix (Option a - Propagate Failure):**
+  - Updated both `mark_defaulted()` and `handle_reputation_increase()` to strictly evaluate `try_invoke_contract` invocation & execution results.
+  - If a reputation call fails when a reputation contract address is configured, `emit_score_update_failed(&env, borrower, is_increase, amount)` is emitted and the call panics with `panic_with_error!(&env, CreditLineError::ReputationCallFailed)`.
+  - Atomically reverts the entire transaction, guaranteeing that loan status (Defaulted/Paid) and borrower reputation scores never diverge.
+  - Documented Policy Option (a) in doc comments for both call sites. If no reputation contract is configured (`None`), score updates are intentionally skipped as the protocol is operating without on-chain reputation integration.
+  - Added `ReputationCallFailed = 32` error variant in `contracts/creditline-contract/src/errors.rs`.
+  - Added `emit_score_update_failed` helper in `contracts/creditline-contract/src/events.rs`.
+- **Files:** `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/events.rs`, `contracts/creditline-contract/src/tests.rs`, `context/progress-tracker.md`
+- **New tests:** Updated `test_reputation_call_failure_reverts_repayment` and added `test_reputation_call_failure_reverts_default` verifying `ReputationCallFailed` error, `ScoreUpdateFailed` event, and atomic loan status revert on both score increase and decrease paths.
+- **Verification:** All 141 tests in `creditline-contract` and all 389 tests across the entire workspace passed with zero failures.
+
 ### Security: `cancel_loan()` Ordering Discipline, Reentrancy Guard & Pre-Flight Check
 - **Problem:** `cancel_loan()` in `creditline-contract` violated contract ordering discipline by omitting `enter_non_reentrant`/`exit_non_reentrant` guards, executing outbound token transfers before mutating status to `Cancelled` and persisting state, and missing token balance pre-flight validation (causing raw token panic on underfunded contract balance).
 - **Fix:**

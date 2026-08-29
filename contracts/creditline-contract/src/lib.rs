@@ -611,14 +611,29 @@ impl CreditLineContract {
             loan.guarantee_amount,
         );
 
+        // Policy: Option (a) - Propagate failure.
+        // If a reputation contract is configured (Some), the default penalty score update
+        // must succeed atomically with the loan default. If the score update call fails,
+        // we emit a ScoreUpdateFailed event and panic, reverting the entire transaction
+        // so loan state (Defaulted) and reputation score can never diverge.
+        // Note: If no reputation contract is configured (None), score updates are
+        // intentionally skipped as the protocol is operating without on-chain reputation integration.
         if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
             let penalty = Self::calculate_default_penalty(&env, &loan);
             let updater = env.current_contract_address();
-            let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+            let res = env.try_invoke_contract::<(), soroban_sdk::Error>(
                 &reputation_contract,
                 &Symbol::new(&env, "decrease_score"),
-                (updater, loan.borrower, penalty).into_val(&env),
+                (updater, loan.borrower.clone(), penalty).into_val(&env),
             );
+            let call_succeeded = match res {
+                Ok(Ok(())) => true,
+                _ => false,
+            };
+            if !call_succeeded {
+                events::emit_score_update_failed(&env, &loan.borrower, false, penalty);
+                panic_with_error!(&env, CreditLineError::ReputationCallFailed);
+            }
         }
 
         Self::exit_non_reentrant(&env);
@@ -1090,6 +1105,12 @@ impl CreditLineContract {
         Ok(())
     }
 
+    /// Handles increasing reputation score upon full loan repayment.
+    ///
+    /// Policy: Option (a) - Propagate failure.
+    /// The score reward update must succeed atomically with full loan repayment.
+    /// If the score update call fails (reverts), we emit a ScoreUpdateFailed event and panic,
+    /// reverting the entire repayment transaction so loan state and reputation score can never diverge.
     fn handle_reputation_increase(
         env: &Env,
         reputation_contract: &Address,
@@ -1099,11 +1120,19 @@ impl CreditLineContract {
         due_date: u64,
     ) {
         let score_increase: u32 = if payment_date < due_date { 15 } else { 10 };
-        let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        let res = env.try_invoke_contract::<(), soroban_sdk::Error>(
             reputation_contract,
             &Symbol::new(env, "increase_score"),
             (updater, borrower, score_increase).into_val(env),
         );
+        let call_succeeded = match res {
+            Ok(Ok(())) => true,
+            _ => false,
+        };
+        if !call_succeeded {
+            events::emit_score_update_failed(env, borrower, true, score_increase);
+            panic_with_error!(env, CreditLineError::ReputationCallFailed);
+        }
     }
 
     fn get_protocol_parameters(env: &Env) -> ProtocolParameters {

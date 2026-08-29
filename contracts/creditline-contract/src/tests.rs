@@ -3173,10 +3173,10 @@ fn test_partial_repayment_does_not_change_reputation_score() {
 }
 
 #[test]
-fn test_reputation_call_failure_does_not_block_repayment() {
-    // Even if the reputation contract call fails, the loan repayment must succeed
-    // We verify this by removing the creditline as a reputation updater and
-    // confirming the loan still moves to Paid status.
+fn test_reputation_call_failure_reverts_repayment() {
+    // Policy (a): Revert surrounding operation on reputation call failure.
+    // If the reputation contract call fails, the repayment transaction must revert completely
+    // so loan status and score never diverge.
     let t = RealIntegrationCtx::setup();
     let provider = Address::generate(&t.env);
     let user = Address::generate(&t.env);
@@ -3200,13 +3200,52 @@ fn test_reputation_call_failure_does_not_block_repayment() {
     // Revoke updater permission so the increase_score call will fail
     t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
 
-    // Repayment must still succeed despite the reputation call failure
-    t.creditline.repay_loan(&user, &loan_id, &total_due);
+    // Repayment must fail with ReputationCallFailed
+    let res = t.creditline.try_repay_loan(&user, &loan_id, &total_due);
+    assert_eq!(res, Err(Ok(CreditLineError::ReputationCallFailed)));
 
-    let loan = t.creditline.get_loan(&loan_id);
-    assert_eq!(loan.status, LoanStatus::Paid);
-    assert_eq!(loan.remaining_balance, 0);
-    // Score unchanged because the call was silently ignored
+    // Loan status remains Active and balance remains unchanged because transaction reverted
+    let loan_after = t.creditline.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Active);
+    assert_eq!(loan_after.remaining_balance, total_due);
+    assert_eq!(t.reputation.get_score(&user), 60);
+}
+
+#[test]
+fn test_reputation_call_failure_reverts_default() {
+    // Policy (a): Revert surrounding operation on reputation call failure.
+    // If the reputation contract call fails during mark_defaulted(), the default transaction must revert completely.
+    let t = RealIntegrationCtx::setup();
+    let provider = Address::generate(&t.env);
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    t.fund_pool(&provider, 10_000);
+    t.register_vendor(&vendor, "Default Vendor");
+    t.set_score(&user, 60);
+    t.mint(&user, 500);
+
+    let now = t.env.ledger().timestamp();
+    let schedule = t.single_installment(1_000, now + 1_000);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Advance time past grace period
+    t.env
+        .ledger()
+        .set_timestamp(now + 1_000 + 86_400 * 7 + 1);
+
+    // Revoke creditline updater permission on reputation contract
+    t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
+
+    // Defaulting must fail with ReputationCallFailed
+    let res = t.creditline.try_mark_defaulted(&loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::ReputationCallFailed)));
+
+    // Loan status remains Active because default transaction reverted
+    let loan_after = t.creditline.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Active);
     assert_eq!(t.reputation.get_score(&user), 60);
 }
 

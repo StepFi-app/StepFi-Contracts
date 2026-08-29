@@ -4132,3 +4132,124 @@ fn test_creditline_upgrade_delay_parameterized_via_parameters_contract() {
     ctx.env.ledger().set_timestamp(172_801 + 172_801);
     ctx.client.execute_upgrade(&wasm_real);
 }
+
+// ─── cancel_loan Security & Order Proof Tests ──────────────────────────────────
+
+#[test]
+fn test_cancel_loan_happy_path_refunds_guarantee() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    assert_eq!(ctx.balance(&user), 0);
+    assert_eq!(ctx.balance(&ctx.client.address), DEFAULT_GUARANTEE);
+
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+}
+
+#[test]
+fn test_cancel_loan_admin_can_cancel() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&ctx.admin, &loan_id);
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+}
+
+#[test]
+fn test_cancel_loan_reentrancy_lock_engages() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.env.as_contract(&ctx.client.address, || {
+        ctx.env
+            .storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("LOCKED"), &true);
+    });
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::ReentrancyDetected)));
+}
+
+#[test]
+fn test_cancel_loan_unauthorized_caller_rejected() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let stranger = Address::generate(&ctx.env);
+    let res = ctx.client.try_cancel_loan(&stranger, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::UnauthorizedRepayer)));
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+}
+
+#[test]
+fn test_cancel_loan_double_cancel_rejected() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::LoanNotCancellable)));
+}
+
+#[test]
+fn test_cancel_loan_underfunded_contract_returns_typed_error() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let drain_target = Address::generate(&ctx.env);
+    ctx.env.as_contract(&ctx.client.address, || {
+        let token_client = soroban_sdk::token::Client::new(&ctx.env, &ctx.token_id);
+        token_client.transfer(&ctx.client.address, &drain_target, &DEFAULT_GUARANTEE);
+    });
+
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::InsufficientRefundBalance)));
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+}
+
+#[test]
+fn test_cancel_loan_state_persists_before_transfer() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+}

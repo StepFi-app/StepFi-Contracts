@@ -167,6 +167,17 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Recently Fixed
 
+### Security: `cancel_loan()` Ordering Discipline, Reentrancy Guard & Pre-Flight Check
+- **Problem:** `cancel_loan()` in `creditline-contract` violated contract ordering discipline by omitting `enter_non_reentrant`/`exit_non_reentrant` guards, executing outbound token transfers before mutating status to `Cancelled` and persisting state, and missing token balance pre-flight validation (causing raw token panic on underfunded contract balance).
+- **Fix:**
+  - Wrapped mutation section in `enter_non_reentrant(&env)` and `exit_non_reentrant(&env)` matching sibling functions.
+  - Reordered execution flow: validate parameters/auth → pre-flight contract token balance check → enter non-reentrant guard → mutate status to `Cancelled` and persist to storage → execute outbound guarantee token refund transfer → emit `LOANCNCL` event → exit non-reentrant guard.
+  - Pre-flight check: queries creditline contract token balance against `loan.guarantee_amount`. If underfunded, returns `Err(CreditLineError::InsufficientRefundBalance)` leaving loan state in `Pending` without panic or state corruption.
+  - Added new error variant `InsufficientRefundBalance = 31` to `CreditLineError`.
+  - Signature updated to `pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError>`.
+- **Files:** `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/tests.rs`
+- **New tests:** 7 comprehensive security & order proof unit tests (happy-case refund, admin cancellation, reentrancy lock rejection, unauthorized caller rejection, double-cancel rejection, underfunded contract typed error, state persistence ordering proof).
+
 ### Security: Unauthorized `distribute_interest` / `accumulate_interest` (SC-17)
 - **Problem:** `distribute_interest()` and `accumulate_interest()` were public mutating functions with no `require_auth()` and no caller restriction. Any funded account could call them with an arbitrary amount, draining the pool's token balance to treasury and merchant fund addresses and inflating the share price so the caller could redeem LP shares for more than deposited.
 - **Fix:** Changed both function signatures to accept `creditline: Address` as the first parameter. Added `creditline.require_auth()` as the literal first line and `Self::require_creditline(&env, &creditline)` as the second, matching `receive_repayment()` exactly. Both functions now pull `interest_amount` tokens into the pool via `token_client.transfer()` before any accounting change. Updated doc comments to remove the admin edge-case mention.

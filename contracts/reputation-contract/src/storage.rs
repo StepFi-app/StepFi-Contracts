@@ -17,6 +17,11 @@ pub fn get_admin(env: &Env) -> Result<Address, ReputationError> {
         .ok_or(ReputationError::NotInitialized)
 }
 
+/// Check if an admin is set in storage
+pub fn has_admin(env: &Env) -> bool {
+    env.storage().instance().has(&ADMIN_KEY)
+}
+
 /// Set the admin address in storage
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&ADMIN_KEY, admin);

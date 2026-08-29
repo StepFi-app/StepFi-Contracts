@@ -13,15 +13,20 @@ pub const TOKEN: Symbol = symbol_short!("TOKEN");
 pub const PARAMETERS_CONTRACT: Symbol = symbol_short!("PARAMS");
 pub const REENTRANCY_LOCK: Symbol = symbol_short!("LOCKED");
 
+/// Fixed max capacity per per-borrower persistent index page entry.
+/// Chunking index entries into 32-element vectors prevents footprint & instance/persistent size bloat.
+pub const PAGE_SIZE: u32 = 32;
+
 const LOAN_SHARD_COUNT: u32 = 32;
 
 #[contracttype]
 #[derive(Clone)]
-enum DataKey {
+pub enum DataKey {
     Loan(u32, u64),
     UserLoanCount(Address),
-    UserLoanAt(Address, u64),
+    UserLoanPage(Address, u32),
     UserActiveDebt(Address),
+    UserLoanAt(Address, u64), // Legacy un-chunked index key for backward compatibility
 }
 
 /// Get the admin address from storage
@@ -59,7 +64,7 @@ pub fn read_loan(env: &Env, loan_id: u64) -> Result<Loan, CreditLineError> {
         .ok_or(CreditLineError::LoanNotFound)
 }
 
-/// Write a loan to storage
+/// Write a loan to storage and extend persistent TTL
 pub fn write_loan(env: &Env, loan: &Loan) {
     let shard = loan_shard(loan.loan_id);
     let key = DataKey::Loan(shard, loan.loan_id);
@@ -80,6 +85,12 @@ pub fn get_user_loan_count(env: &Env, borrower: &Address) -> Result<u64, CreditL
         .unwrap_or(0))
 }
 
+/// Reads borrower loan IDs across chunked persistent storage index pages.
+///
+/// Pagination contract for consumers:
+/// - `start`: zero-indexed global loan offset for the borrower.
+/// - `limit`: maximum number of loan IDs to retrieve in one call.
+/// Indexes are stored in pages of size `PAGE_SIZE` (32 loan IDs per page key).
 pub fn get_user_loan_ids_paginated(
     env: &Env,
     borrower: &Address,
@@ -96,11 +107,35 @@ pub fn get_user_loan_ids_paginated(
     let end = start.saturating_add(limit as u64).min(total);
     let mut idx = start;
     while idx < end {
-        let key = DataKey::UserLoanAt(borrower.clone(), idx);
-        if let Some(loan_id) = env.storage().persistent().get::<DataKey, u64>(&key) {
-            result.push_back(loan_id);
+        let page_num = (idx / (PAGE_SIZE as u64)) as u32;
+        let page_offset = (idx % (PAGE_SIZE as u64)) as u32;
+        let key = DataKey::UserLoanPage(borrower.clone(), page_num);
+
+        if let Some(page) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) {
+            let page_len = page.len();
+            let mut offset = page_offset;
+            while offset < page_len && idx < end {
+                if let Some(loan_id) = page.get(offset) {
+                    result.push_back(loan_id);
+                }
+                idx += 1;
+                offset += 1;
+            }
+        } else {
+            // Backward compatibility fallback for legacy un-chunked UserLoanAt(borrower, idx) entries
+            let legacy_key = DataKey::UserLoanAt(borrower.clone(), idx);
+            if let Some(loan_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, u64>(&legacy_key)
+                .or_else(|| env.storage().instance().get::<DataKey, u64>(&legacy_key))
+            {
+                result.push_back(loan_id);
+                idx += 1;
+            } else {
+                return Err(CreditLineError::LoanNotFound);
+            }
         }
-        idx += 1;
     }
 
     Ok(result)
@@ -163,9 +198,19 @@ pub fn decrease_user_active_debt(
 fn append_user_loan_index(env: &Env, borrower: &Address, loan_id: u64) {
     let count = get_user_loan_count(env, borrower)
         .unwrap_or_else(|err| soroban_sdk::panic_with_error!(env, err));
-    let loan_at_key = DataKey::UserLoanAt(borrower.clone(), count);
-    env.storage().persistent().set(&loan_at_key, &loan_id);
-    extend_persistent_ttl(env, &loan_at_key);
+
+    let page_num = (count / (PAGE_SIZE as u64)) as u32;
+    let page_key = DataKey::UserLoanPage(borrower.clone(), page_num);
+
+    let mut page: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&page_key)
+        .unwrap_or_else(|| Vec::new(env));
+    page.push_back(loan_id);
+
+    env.storage().persistent().set(&page_key, &page);
+    extend_persistent_ttl(env, &page_key);
 
     let count_key = DataKey::UserLoanCount(borrower.clone());
     let next_count = count

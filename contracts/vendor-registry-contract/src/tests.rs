@@ -12,7 +12,8 @@ fn setup<'a>(env: &'a Env) -> (VendorRegistryContractClient<'a>, Address, Addres
     let admin = Address::generate(env);
     let vendor = Address::generate(env);
 
-    // Initialize the contract with the admin
+    // Initialize the contract with the admin (requires auth via mock_all_auths)
+    env.mock_all_auths();
     client.initialize(&admin);
 
     (client, admin, vendor)
@@ -26,12 +27,32 @@ fn test_initialization() {
     let client = VendorRegistryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
+    env.mock_all_auths();
     // Initial setup succeeds
     client.initialize(&admin);
 
     // Initializing twice throws an error
     let res = client.try_initialize(&admin);
     assert!(res.is_err());
+}
+
+// New test: unauthorized caller cannot complete initialization (auth failure)
+#[test]
+fn test_initialize_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let attacker = Address::generate(&env);
+
+    // Without mock_all_auths, initialize should fail with auth error
+    // because admin.require_auth() is the first statement
+    let res = client.try_initialize(&attacker);
+    assert!(res.is_err());
+
+    // Second attempt should still fail (AlreadyInitialized), not auth error
+    // since the contract was never successfully initialized
+    let res2 = client.try_initialize(&attacker);
+    assert!(res2.is_err());
 }
 
 #[test]
@@ -269,8 +290,8 @@ fn test_reentrancy_guard_on_register_vendor() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     // Lock the contract
     env.as_contract(&contract_id, || {
@@ -290,8 +311,8 @@ fn test_reentrancy_guard_on_deactivate_vendor() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     let name = String::from_str(&env, "Test");
     client.register_vendor(&admin, &vendor, &name);
@@ -312,8 +333,8 @@ fn test_reentrancy_guard_on_activate_vendor() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     let name = String::from_str(&env, "Test");
     client.register_vendor(&admin, &vendor, &name);
@@ -335,8 +356,8 @@ fn test_reentrancy_guard_on_set_vendor_status() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     let name = String::from_str(&env, "Test");
     client.register_vendor(&admin, &vendor, &name);
@@ -389,8 +410,8 @@ fn test_reentrancy_guard_on_approve_vendor() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     let name = String::from_str(&env, "Test");
     client.register_vendor(&admin, &vendor, &name);
@@ -411,8 +432,8 @@ fn test_reentrancy_guard_on_suspend_vendor() {
     let admin = Address::generate(&env);
     let vendor = Address::generate(&env);
 
-    client.initialize(&admin);
     env.mock_all_auths();
+    client.initialize(&admin);
 
     let name = String::from_str(&env, "Test");
     client.register_vendor(&admin, &vendor, &name);

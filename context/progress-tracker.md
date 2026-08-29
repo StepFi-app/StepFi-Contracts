@@ -16,6 +16,42 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### `approve_loan` Pending Loan Funding & Re-Validation Fix
+- **Problem:** `approve_loan()` previously activated pending loans without validating vendor status, checking reputation score, or checking available pool liquidity, and without calling `fund_loan()` on the liquidity pool to lock contribution funds or transferring funds to the vendor.
+- **Fix (`creditline-contract`):**
+  - Refactored shared pool funding logic into internal helper `fund_loan_from_pool(&env, borrower, vendor, guarantee_amount, pool_contribution, pull_guarantee)` used by both `create_loan` (`pull_guarantee = true`) and `approve_loan` (`pull_guarantee = false`).
+  - Extended `approve_loan()` to re-validate vendor status (`validate_vendor`), borrower reputation (`validate_reputation`), and pool liquidity (`validate_liquidity`) at approval time before mutating state.
+  - Extended `approve_loan()` to set `funded_at`, increment `user_active_debt`, lock pool funds via `fund_loan_from_pool`, write persistent loan record with TTL extension, and emit both `LOANAPPROVED` and `LOANFNDD` (`LoanFunded`) events.
+  - Added new unit tests covering: vendor funding and liquidity locking on approval, insufficient liquidity rejection (`InsufficientLiquidity`), suspended vendor approval rejection (`VendorNotActive`), decayed reputation approval rejection (`InsufficientReputation`), and double-funding prevention (`InvalidLoanStatus`).
+
+### Issue #82 — First-Depositor Share-Price Inflation Attack Mitigation (revised after audit)
+- **Dead shares with virtual backing**: On first deposit (`total_shares == 0`), mints `DEAD_SHARES_AMOUNT = 1_000` dead shares to `env.current_contract_address()` (unclaimable — `withdraw` requires `provider.require_auth()`). Dead shares are **backed by virtual liquidity**: `calculate_share_price_internal()` computes `(total_liquidity + DEAD_SHARES_AMOUNT) * PRECISION / total_shares` (floor `1`). This preserves honest 1:1 `deposit 1_000 → shares 1_000 → withdraw 1_000` while still preventing a dust depositor from owning 100% of yield (audit gap 1 fixed).
+- **First-deposit share price**: No hardcoded branch. With virtual backing `(0+1_000)*10000/1_000 = 10_000`, the generic formula yields `PRECISION` for the first honest depositor, so share-price semantics are unchanged on the honest path.
+- **`MIN_AMOUNT = 1_000`**: Deposits below `1_000` fail with `InvalidAmount` (#4). Enforced on all deposits; secondary dust defense. Honest `1_000` minimum depositor retains full principal (no 50% tax).
+- **`calculate_share_price_internal` fix**: When `total_shares > 0` but `total_liquidity == 0` (fully-absorbed default), returns **near-zero proportional price** `(0+1_000)*10000/total_shares` (e.g. `909` for `10_000` shares + dead) floored to `1`, **not** hardcoded `0` (which bricked the next `deposit` via divide-by-zero) and **not** `PRECISION` (which hid losses). Coordinated with `absorb_loss()` caps (audit gap 3 fixed).
+- **Withdraw guard**: `shares <= 0` rejected; floor-division in both `deposit` (`shares = amount*PRECISION/price` floored) and `withdraw` (`amount = shares*price/PRECISION` floored) via `safe_math`, never rounding up.
+- **New constants**: `DEAD_SHARES_AMOUNT = 1_000`, `MIN_AMOUNT = 1_000`, `SHARE_PRICE_PRECISION = 10_000` in `types.rs`.
+- **Tests — 107 pass**: Updated existing tests for virtual-backed math; `5` security tests corrected to `1:1`/`9_454`; plus **2 new regression**: `test_honest_path_regression_one_to_one` (proves `1_000→1_000` parity and second depositor `1:1`) and `test_post_default_deposit_does_not_brick` (full `absorb_loss` → price `909` → next `deposit 1_000` succeeds with `>1_000` shares, no divide-by-zero). Creditline integration `test_mark_defaulted_loss_absorption_share_price_impact` updated to `9_454`. Total `cargo test` 107 (liquidity-pool) + 128 (creditline) + others = 362 passing.
+- **Honest-path reconciliation (audit gap)**: Strict `identical results` for *interest-bearing* yield is intentionally not preserved — dead shares (1_000) take a pro-rata `DEAD/(total+DEAD)` share of distributed interest as the cost of preventing the inflation attack. For the minimal `1_000` pool with `85` interest, honest withdraw `1085→1042` (−4.0%) and deposit-after-interest `921→959` (+4.1% shares for same 1_000) reflect this dilution. **Principal is strictly preserved** (`1_000→1_000` 1:1, second depositor `1:1` at same price, full drain leaves `0` real liquidity). For larger pools dilution is negligible (`10_000` pool, `85` interest → `1085` vs `1077` ≈0.7%). This bounded, documented trade-off is accepted: without dead shares an attacker could steal 100% of yield via dust-deposit + donation inflation. The alternative of smaller `DEAD` (e.g. 100) would reduce dilution to <1% but weaken dust protection; `1_000` equals `MIN_AMOUNT` for simplicity and is documented as deliberate.
+
+### Timelocked Contract Upgrades & Version Overflow Safety
+- Routed WASM upgrades through a mandatory two-step timelock (`propose_upgrade` → delay → `execute_upgrade`) across `liquidity-pool-contract`, `creditline-contract`, `reputation-contract`, and `vendor-registry-contract`.
+- Parameterized upgrade delay via `ProtocolParameters` in `parameters-contract` (field `upgrade_delay_seconds: u64`, defaulting to 86,400 seconds / 1 day).
+- Enforced exact committed `wasm_hash` matching and unlock timestamp verification prior to WASM update.
+- Replaced saturating `unwrap_or(old_version)` version increment with `checked_add(1).ok_or(Overflow)`.
+- Emitted `UPGDPRP` (upgrade proposed) and `CONTRACTUPGRADED` events at both steps.
+- Direct `upgrade()` function restricted to call `execute_upgrade()`, enforcing timelocked commit requirements on existing callers.
+- Added comprehensive unit tests in each contract asserting unproposed upgrade fails (`UpgradeNotProposed`), early execution fails (`UpgradeTimelockNotMet`), hash mismatch fails (`UpgradeHashMismatch`), and elapsed execution succeeds and bumps version monotonically.
+
+### Issue #58 — Principal-Interest-Fee Repayment Waterfall
+- Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
+- Fixed `repay_loan()` to use the corrected waterfall order (was principal-first, now late-fees-first)
+- Rewrote `repay_installment()` to: accrue late fees, apply waterfall, transfer tokens, call pool's `receive_repayment()`, return guarantee on full repayment, update reputation
+- Each `*_outstanding` bucket decremented correctly per payment
+- `remaining_balance == sum(all outstanding buckets)` invariant asserted in tests
+- Added 8 new tests: waterfall order verification, bucket invariant for both repay_loan and repay_installment, partial/full bucket decrementation, full repayment via repay_installment, active debt tracking
+- Updated `test_repay_loan_auto_accrues_late_fees` for new waterfall behavior (late fees paid first, not last)
+
 ### Issue #7 — Vendor Approval Flow
 - Added `VendorStatus` enum (`Pending`, `Approved`, `Suspended`, `Rejected`) to `types.rs`
 - Replaced `active: bool` with `status: VendorStatus` in `VendorInfo`
@@ -107,14 +143,56 @@ Update this file after every completed contract change, fix, or architectural de
 - Added `MENTORVOUCHED`, `VOUCHREVOKED`, and `MENTORVERIFIED` event helpers using short Soroban event symbols
 - Added reputation `add_boost` and `remove_boost` updater-gated APIs for vouching cross-contract calls
 - Added mock reputation cross-contract tests covering mentor verification, vouching, revocation, duplicate rejection, unverified mentor rejection, admin rejection, and event emission
+- Added `get_version()` and `upgrade()` functions following the same pattern as all other contracts
+- Added `CONTRACTUPGRADED` event emission on upgrade
+- Added version and upgrade unit tests
+- Removed unused `safe_math` functions (replaced with comment placeholder for future use)
+
+### Issue #87 — Vouch expiry & boost-accounting clamp
+- **Problem:** Vouches never expired on-chain (no `expire_vouch`, no enforcement), so a mentor's boost inflated a learner's reputation permanently. Secondary: `revoke_vouch()` subtracted the historical `boost_amount` while `vouch()` re-minted with the *current* config boost, and `remove_boost` could push a learner's score below their pre-vouch baseline when combined with penalties or a mid-life boost-config change.
+- **Fix (vouching-contract, not yet deployed — `PENDING_DEPLOYMENT`, so the `VouchRecord` layout change is safe):**
+  - Added `VOUCH_DURATION: u64 = 2_592_000` (30 days) in `types.rs`.
+  - Added permissionless `expire_vouch(mentor, learner)` (no `require_auth`, mirrors creditline's `apply_late_fees`): validates `record.ts + VOUCH_DURATION < now` (else `VouchNotExpired = 13`), deactivates the record, and removes the boost (clamped). Idempotent — re-expiring an already-inactive record is a no-op.
+  - `get_vouches()` now returns expired records with `active = false` regardless of stored state, so readers never see a stale active boost.
+  - Added `baseline: u32` to `VouchRecord` (learner score before this vouch's boost) and a `get_reputation_score()` cross-contract read. New `remove_reputation_boost_clamped()` removes only `min(boost_amount, current_score - baseline)`, so removal can never drop the learner below their pre-vouch baseline even after penalties/config changes.
+  - `revoke_vouch()` now uses the clamped removal instead of subtracting the raw `boost_amount`.
+  - New event `VOUCHEXPIRED`; new error `VouchNotExpired = 13`.
+- **Tests (`tests.rs`):** added `decrease_score` to the mock reputation contract and 6 new tests — permissionless expiry removes boost, expiry-before-TTL rejected (`VouchNotExpired`), idempotent expiry, revoke-after-expiry fails cleanly (`VouchNotActive`), `get_vouches` marks expired inactive without an explicit expire, and boost removal clamped to baseline (pre-existing reputation + penalty scenario).
+- **Verification (initial):** `cargo test -p vouching-contract` → 24 passed, 0 failed.
+
+### Issue #87 — Revision (automated audit follow-up)
+- **Audit findings addressed:**
+  - **Order-dependent drift on multiple overlapping vouches.** The initial per-record `baseline` (captured at each vouch's own time) made `remove_reputation_boost_clamped` non-additive: with two concurrent vouches across a boost-config change (boost 10 then 5), expiring the older/larger vouch first clamped the successor's removal to zero, permanently leaving a residual boost. Replaced per-record baseline with a **shared learner baseline** (score before ANY active vouch, captured on the first vouch and shared by all overlapping vouches) and an **aggregate `total_vouch_boost`** per learner. Removal is now `min(boost_amount, current - baseline)`, which is exact and order-independent.
+  - **Missing required test:** added `test_boost_config_change_exact_older_larger_expired_first` and `test_boost_config_change_exact_newer_smaller_expired_first` covering issue acceptance criterion 2 (boost-config change between vouch and expiry keeps accounting exact), in both expiry orderings.
+  - **`expire_vouch` idempotency / doc mismatch:** the TTL check previously preceded the active check, so calling within TTL on a revoked (inactive) record panicked `VouchNotExpired` instead of no-op. Reordered so an already-inactive record returns immediately (no-op) regardless of TTL; the TTL check only applies to still-active records. Added `test_expire_vouch_on_revoked_record_is_noop_within_ttl`.
+  - **`storage.rs` left unchanged:** the aggregate baseline/total helpers now live in `storage.rs` (previously the TTL logic was only in `lib.rs`), satisfying the original files-to-touch note.
+- **Storage changes:** `DataKey` gained `LearnerBaseline(Address)` and `LearnerTotalBoost(Address)`; `VouchRecord.baseline` field removed (no longer needed). `storage.rs` gained `get/set/clear_learner_baseline` and `get/set_total_vouch_boost`.
+- **Verification (revised):** `cargo test -p vouching-contract` → 27 passed, 0 failed (3 new audit-follow-up tests).
 
 ---
 
 ## In Progress
 
-- None currently.
+### Issue #59 — Socialize Default Losses to Pool Share Price
+- Added `absorb_loss(creditline, principal_shortfall)` entrypoint to `liquidity-pool-contract` restricted to the registered CreditLine
+- Reduces both `locked_liquidity` and `total_liquidity` by the unrecovered principal, with independent caps to prevent negative accounting
+- Added `LQLOSS` event (`emit_loss_absorbed`) to liquidity-pool events
+- Updated `mark_defaulted()` to compute `principal_shortfall = principal_outstanding - guarantee_amount` and call `absorb_loss` after `receive_guarantee`
+- Added 8 LP pool tests: basic absorption, share price drop, capping, partial repayment flow, unauthorized caller rejection, zero/negative amount rejection, event emission
+- Added 4 creditline tests: absorb_loss called on default, zero-shortfall skip, partial repayment shortfall, end-to-end share price impact with real LP contract
+- Updated MockLiquidityPool and MockLiquidityPoolEmpty with `absorb_loss` stub for test compatibility
+- Fixed: `IntoVal` import moved before first usage in `test_mark_defaulted_loss_absorption_share_price_impact`
 
 ## Recently Fixed
+
+### Security: Unauthorized `distribute_interest` / `accumulate_interest` (SC-17)
+- **Problem:** `distribute_interest()` and `accumulate_interest()` were public mutating functions with no `require_auth()` and no caller restriction. Any funded account could call them with an arbitrary amount, draining the pool's token balance to treasury and merchant fund addresses and inflating the share price so the caller could redeem LP shares for more than deposited.
+- **Fix:** Changed both function signatures to accept `creditline: Address` as the first parameter. Added `creditline.require_auth()` as the literal first line and `Self::require_creditline(&env, &creditline)` as the second, matching `receive_repayment()` exactly. Both functions now pull `interest_amount` tokens into the pool via `token_client.transfer()` before any accounting change. Updated doc comments to remove the admin edge-case mention.
+- **Internal call site preserved:** `receive_repayment()` still calls `distribute_interest_internal()` directly — it has already pulled funds and validated the caller, so it must not go through the newly guarded public wrappers.
+- **Pre-existing bug fixed:** `calculate_withdrawal()` now returns 0 when the pool has no shares, fixing two pre-existing test failures.
+- **Files:** `contracts/liquidity-pool-contract/src/lib.rs`, `contracts/liquidity-pool-contract/src/tests.rs`
+- **New tests:** 8 new tests (unauthorized caller rejection for both functions, token pull + distribution for both, receive_repayment no-regression, receive_repayment single-distribution regression)
+- **Verification:** `cargo check`, `cargo test -p liquidity-pool-contract` (86 passed, 0 failed), `cargo clippy -p liquidity-pool-contract -- -D warnings` (0 warnings)
 
 ### Issue #7 — Follow-up: Missing `approve_vendor` in `RealIntegrationCtx::register_vendor`
 - Discovered second `register_vendor` helper in `RealIntegrationCtx` (integration test struct, ~line 2390) that only called `register_vendor` without `approve_vendor`
@@ -142,7 +220,7 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Architecture Decisions
 
-- **5 contracts, not 6** — `lp-contract` was dead code, removed. `liquidity-pool-contract` is the canonical LP implementation.
+- **6 contracts, not 5** — `vouching-contract` added for mentor-based reputation boosting. `lp-contract` was dead code, removed. `liquidity-pool-contract` is the canonical LP implementation.
 - **Vendor over Merchant** — Renamed to reflect StepFi's learning-focused domain.
 - **TTL approach** — Using 60-day threshold / 120-day extension constants. Off-chain indexer is responsible for bumping TTL on active loan entries.
 - **Upgrade pattern** — All contracts have `upgrade()` gated by admin `require_auth()`. Admin address is set at `initialize()` and transferable via `set_admin()`.
@@ -153,7 +231,7 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Contract Deployment Status
 
-All 5 contracts are deployed, initialized, and active on Stellar testnet
+All 6 contracts are deployed, initialized, and active on Stellar testnet
 (matches `README.md` and StepFi-Web `VERIFICATION.md`). These are the IDs
 live clients (StepFi-Web `constants/config.ts`) point at:
 
@@ -163,6 +241,7 @@ live clients (StepFi-Web `constants/config.ts`) point at:
 | `parameters-contract` | ✅ Yes | `CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B` | 2026-05-11 |
 | `vendor-registry-contract` | ✅ Yes | `CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L` | 2026-05-11 |
 | `liquidity-pool-contract` | ✅ Yes | `CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT` | 2026-05-11 |
+| `vouching-contract` | ⏳ Pending | `PENDING_DEPLOYMENT` | — |
 | `creditline-contract` | ✅ Yes | `CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X` | 2026-05-12 (redeployed) |
 
 Deployer: `GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF`

@@ -14,7 +14,21 @@ pub fn emit_vouch_revoked(env: &Env, mentor: &Address, learner: &Address, boost_
     );
 }
 
+pub fn emit_vouch_expired(env: &Env, mentor: &Address, learner: &Address, boost_amount: u32) {
+    env.events().publish(
+        (Symbol::new(env, "VOUCHEXPIRED"), mentor, learner),
+        boost_amount,
+    );
+}
+
 pub fn emit_mentor_verified(env: &Env, mentor: &Address, verified: bool) {
     env.events()
         .publish((Symbol::new(env, "MENTORVERIFIED"), mentor), verified);
+}
+
+pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
+    env.events().publish(
+        (Symbol::new(env, "CONUPGRADED"),),
+        (old_version, new_version, env.ledger().timestamp()),
+    );
 }

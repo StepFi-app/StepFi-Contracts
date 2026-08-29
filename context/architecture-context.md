@@ -19,7 +19,7 @@ StepFi-Contracts is the on-chain truth layer. Every financial operation in StepF
 
 ---
 
-## Contracts (5 total)
+## Contracts (6 total)
 
 | Crate | File | Purpose |
 |---|---|---|
@@ -28,6 +28,7 @@ StepFi-Contracts is the on-chain truth layer. Every financial operation in StepF
 | `liquidity-pool-contract` | `contracts/liquidity-pool-contract/` | Share-based LP pool — deposits, withdrawals, loan funding, interest distribution. |
 | `vendor-registry-contract` | `contracts/vendor-registry-contract/` | Admin-managed whitelist of verified learning vendors. |
 | `parameters-contract` | `contracts/parameters-contract/` | Governance-tunable protocol parameters — interest BPS, grace periods, min reputation. |
+| `vouching-contract` | `contracts/vouching-contract/` | Mentor vouching — verified mentors boost learner reputation scores via cross-contract calls. |
 
 ---
 
@@ -42,6 +43,9 @@ creditline-contract
 
 liquidity-pool-contract
     └── creditline-contract   (restricted — only creditline can call fund_loan, receive_repayment)
+
+vouching-contract
+    └── reputation-contract   (add_boost / remove_boost cross-contract calls)
 ```
 
 ### Initialization Order
@@ -53,7 +57,8 @@ Must be initialized in this exact dependency order:
 2. reputation-contract
 3. vendor-registry-contract
 4. liquidity-pool-contract
-5. creditline-contract
+5. vouching-contract
+6. creditline-contract
 ```
 
 Each contract needs the addresses of its dependencies passed to `initialize()`.

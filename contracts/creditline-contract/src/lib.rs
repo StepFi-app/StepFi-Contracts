@@ -31,6 +31,14 @@ pub use types::{
     RepaymentInstallment,
 };
 
+/// Internal breakdown of a repayment across the four outstanding buckets.
+struct RepaymentAllocation {
+    late_fee_paid: i128,
+    interest_paid: i128,
+    service_fee_paid: i128,
+    principal_paid: i128,
+}
+
 #[contract]
 pub struct CreditLineContract;
 
@@ -98,7 +106,7 @@ impl CreditLineContract {
         storage::write_loan(&env, &loan);
 
         let pool_contribution = safe_math::sub_i128(total_amount, guarantee_amount)?;
-        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution);
+        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution, true);
 
         events::emit_loan_created(
             &env,
@@ -186,18 +194,66 @@ impl CreditLineContract {
         storage::set_admin(&env, &new_admin);
     }
 
-    /// Upgrade the contract WASM — admin only
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+    /// Propose a timelocked contract WASM upgrade — admin only
+    pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
 
-        // bump stored version and emit event
+        let params = Self::get_protocol_parameters(&env);
+        let delay = if params.upgrade_delay_seconds > 0 {
+            params.upgrade_delay_seconds
+        } else {
+            storage::DEFAULT_UPGRADE_DELAY_SECONDS
+        };
+
+        let proposed_at = env.ledger().timestamp();
+        let unlock_at = proposed_at
+            .checked_add(delay)
+            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::Overflow));
+
+        let pending = types::PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            proposed_at,
+            unlock_at,
+        };
+        storage::set_pending_upgrade(&env, &pending);
+        events::emit_upgrade_proposed(&env, &new_wasm_hash, proposed_at, unlock_at);
+    }
+
+    /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
+    pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let pending = storage::get_pending_upgrade(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+            .ok_or(CreditLineError::UpgradeNotProposed)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        if pending.wasm_hash != new_wasm_hash {
+            panic_with_error!(&env, CreditLineError::UpgradeHashMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < pending.unlock_at {
+            panic_with_error!(&env, CreditLineError::UpgradeTimelockNotMet);
+        }
+
         let old_version = storage::get_version(&env).unwrap_or(1u32);
-        let new_version = old_version.checked_add(1).unwrap_or(old_version);
+        let new_version = old_version
+            .checked_add(1)
+            .ok_or(CreditLineError::Overflow)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_version(&env, new_version);
 
+        storage::clear_pending_upgrade(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::emit_contract_upgraded(&env, old_version, new_version);
+    }
+
+    /// Upgrade the contract WASM — admin only (enforces prior propose_upgrade timelock)
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::execute_upgrade(env, new_wasm_hash);
     }
     pub fn get_admin(env: Env) -> Result<Address, CreditLineError> {
         storage::get_admin(&env)
@@ -322,17 +378,20 @@ impl CreditLineContract {
         vendor: &Address,
         guarantee_amount: i128,
         pool_contribution: i128,
+        pull_guarantee: bool,
     ) {
         let liquidity_pool = storage::get_liquidity_pool(env)
             .unwrap_or_else(|err| panic_with_error!(env, err))
             .unwrap_or_else(|| panic_with_error!(env, CreditLineError::InsufficientLiquidity));
 
-        let token_address = storage::get_token(env)
-            .unwrap_or_else(|err| panic_with_error!(env, err))
-            .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
+        if pull_guarantee {
+            let token_address = storage::get_token(env)
+                .unwrap_or_else(|err| panic_with_error!(env, err))
+                .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
 
-        let token_client = token::Client::new(env, &token_address);
-        token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+            let token_client = token::Client::new(env, &token_address);
+            token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+        }
 
         if pool_contribution > 0 {
             let lp_client = LiquidityPoolContractClient::new(env, &liquidity_pool);
@@ -534,6 +593,15 @@ impl CreditLineContract {
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
         lp_client.receive_guarantee(&env.current_contract_address(), &loan.guarantee_amount);
 
+        // Compute unrecovered principal shortfall and socialize the loss to the pool.
+        let principal_shortfall = loan
+            .principal_outstanding
+            .checked_sub(loan.guarantee_amount)
+            .unwrap_or(0);
+        if principal_shortfall > 0 {
+            lp_client.absorb_loss(&env.current_contract_address(), &principal_shortfall);
+        }
+
         events::emit_loan_defaulted(
             &env,
             loan.borrower.clone(),
@@ -581,14 +649,52 @@ impl CreditLineContract {
             }
         }
 
-        // 4. Transition to Active
-        loan.status = LoanStatus::Active;
+        // 4. Re-validate vendor status, borrower reputation, and liquidity availability at approval time
+        Self::validate_vendor(&env, &loan.vendor)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_reputation(&env, &loan.borrower)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_liquidity(&env, loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
-        // 5. Write back with TTL extension
+        // 5. Enter non-reentrant section
+        Self::enter_non_reentrant(&env);
+
+        // 6. Transition status to Active and record funded_at
+        loan.status = LoanStatus::Active;
+        loan.funded_at = env.ledger().timestamp();
+
+        // 7. Increment user active debt
+        storage::increase_user_active_debt(&env, &loan.borrower, loan.remaining_balance)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // 8. Fund loan contribution from liquidity pool (guarantee was already transferred at request)
+        let pool_contribution = safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::fund_loan_from_pool(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan.guarantee_amount,
+            pool_contribution,
+            false,
+        );
+
+        // 9. Write back with TTL extension
         storage::write_loan(&env, &loan);
 
-        // 6. Emit event
+        // 10. Emit events
         events::emit_loan_approved(&env, loan_id);
+        events::emit_loan_funded(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan_id,
+            loan.total_amount,
+            loan.guarantee_amount,
+        );
+
+        Self::exit_non_reentrant(&env);
 
         loan
     }
@@ -662,25 +768,10 @@ impl CreditLineContract {
 
         Self::enter_non_reentrant(&env);
 
-        // Payment priority: principal → interest → service fee → late fees
-        let principal_paid = amount.min(loan.principal_outstanding);
-        let after_principal = safe_math::sub_i128(amount, principal_paid)?;
-        let interest_paid = after_principal.min(loan.interest_outstanding);
-        let after_interest = safe_math::sub_i128(after_principal, interest_paid)?;
-        let fee_paid = after_interest.min(loan.service_fee_outstanding);
-        let after_fee = safe_math::sub_i128(after_interest, fee_paid)?;
-        let late_fee_paid = after_fee.min(loan.late_fees_outstanding);
+        // Payment priority: late fees → interest → service fee → principal
+        let allocation = Self::apply_waterfall(&mut loan, amount)?;
 
-        loan.principal_outstanding =
-            safe_math::sub_i128(loan.principal_outstanding, principal_paid)?;
-        loan.interest_outstanding = safe_math::sub_i128(loan.interest_outstanding, interest_paid)?;
-        loan.service_fee_outstanding = safe_math::sub_i128(loan.service_fee_outstanding, fee_paid)?;
-        loan.late_fees_outstanding =
-            safe_math::sub_i128(loan.late_fees_outstanding, late_fee_paid)?;
-
-        let new_balance = safe_math::sub_i128(loan.remaining_balance, amount)?;
-
-        loan.remaining_balance = new_balance;
+        let new_balance = loan.remaining_balance;
         let is_fully_repaid = new_balance == 0;
         if is_fully_repaid {
             loan.status = LoanStatus::Paid;
@@ -699,11 +790,13 @@ impl CreditLineContract {
         Self::authorize_token_transfer(&env, &token_address, &lp_address, amount);
 
         let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
-        let interest_fee_late =
-            safe_math::add_i128(safe_math::add_i128(interest_paid, fee_paid)?, late_fee_paid)?;
+        let interest_fee_late = safe_math::add_i128(
+            safe_math::add_i128(allocation.interest_paid, allocation.service_fee_paid)?,
+            allocation.late_fee_paid,
+        )?;
         lp_client.receive_repayment(
             &env.current_contract_address(),
-            &principal_paid,
+            &allocation.principal_paid,
             &interest_fee_late,
         );
 
@@ -750,12 +843,9 @@ impl CreditLineContract {
 
     /// Mark a single installment paid and reduce the loan's outstanding balance by `amount`.
     ///
-    /// Borrower-only. Validates the installment index, ensures the slot is unpaid, debits the
-    /// remaining balance, sets `paid`/`paid_at`, persists the loan, and emits `INSTPAID`.
-    ///
-    /// If the installment is overdue (`due_date != 0 && now > due_date`), a late fee
-    /// of `installment.amount * late_fee_bps / 10_000` is charged on top and routed
-    /// to the liquidity pool.  The late fee does NOT increase the loan balance.
+    /// Borrower-only. Applies the repayment waterfall (late fees → interest → service fee →
+    /// principal), debits the remaining balance, sets `paid`/`paid_at`, persists the loan,
+    /// transfers tokens to the pool, and emits `INSTPAID`.
     pub fn repay_installment(
         env: Env,
         borrower: Address,
@@ -788,52 +878,38 @@ impl CreditLineContract {
             return Err(CreditLineError::InstallmentAlreadyPaid);
         }
 
+        // Accrue any outstanding late fees before validating the payment amount so
+        // the borrower repays the true current balance (principal + interest + fees + late fees).
+        let accrued_fee = Self::accrue_late_fees_internal(&env, &mut loan)?;
+        if accrued_fee > 0 {
+            storage::increase_user_active_debt(&env, &borrower, accrued_fee)
+                .unwrap_or_else(|err| panic_with_error!(&env, err));
+            events::emit_late_fee_accrued(
+                &env,
+                &borrower,
+                loan_id,
+                accrued_fee,
+                loan.remaining_balance,
+            );
+        }
+
         if amount <= 0 || amount > loan.remaining_balance {
             return Err(CreditLineError::InvalidRepaymentAmount);
         }
 
         Self::enter_non_reentrant(&env);
 
-        // Compute per-installment late fee.
-        let now = env.ledger().timestamp();
-        let late_fee = if installment.due_date != 0 && now > installment.due_date {
-            let params = Self::get_protocol_parameters(&env);
-            safe_math::div_i128(
-                safe_math::mul_i128(installment.amount, params.late_fee_bps as i128)?,
-                types::BPS_DENOMINATOR,
-            )?
-        } else {
-            0
-        };
+        // Payment priority: late fees → interest → service fee → principal
+        let allocation = Self::apply_waterfall(&mut loan, amount)?;
 
-        // Transfer borrower payment (amount + late_fee) to the creditline contract.
-        let total_owed = safe_math::add_i128(amount, late_fee)?;
-        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
-        let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&borrower, &env.current_contract_address(), &total_owed);
-
-        // Route late fee to the liquidity pool (does NOT touch loan balance).
-        if late_fee > 0 {
-            let lp_address =
-                storage::get_liquidity_pool(&env)?.ok_or(CreditLineError::InsufficientLiquidity)?;
-            Self::authorize_token_transfer(&env, &token_address, &lp_address, late_fee);
-            let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
-            lp_client.receive_repayment(
-                &env.current_contract_address(),
-                &0i128,
-                &late_fee,
-            );
-            events::emit_late_fee_paid(&env, loan_id, installment_index, late_fee);
-        }
-
-        let new_balance = safe_math::sub_i128(loan.remaining_balance, amount)?;
-        loan.remaining_balance = new_balance;
+        let new_balance = loan.remaining_balance;
 
         installment.paid = true;
         installment.paid_at = now;
         loan.repayment_schedule.set(installment_index, installment);
 
-        if new_balance == 0 {
+        let is_fully_repaid = new_balance == 0;
+        if is_fully_repaid {
             loan.status = LoanStatus::Paid;
         }
 
@@ -841,7 +917,54 @@ impl CreditLineContract {
             .unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::write_loan(&env, &loan);
 
+        let lp_address =
+            storage::get_liquidity_pool(&env)?.ok_or(CreditLineError::InsufficientLiquidity)?;
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&borrower, &env.current_contract_address(), &amount);
+        Self::authorize_token_transfer(&env, &token_address, &lp_address, amount);
+
+        let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
+        let interest_fee_late = safe_math::add_i128(
+            safe_math::add_i128(allocation.interest_paid, allocation.service_fee_paid)?,
+            allocation.late_fee_paid,
+        )?;
+        lp_client.receive_repayment(
+            &env.current_contract_address(),
+            &allocation.principal_paid,
+            &interest_fee_late,
+        );
+
+        if is_fully_repaid {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &borrower,
+                &loan.guarantee_amount,
+            );
+        }
+
         events::emit_installment_paid(&env, loan_id, installment_index, amount, new_balance);
+
+        if is_fully_repaid {
+            if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
+                let updater = env.current_contract_address();
+                let payment_date = env.ledger().timestamp();
+                let due_date = loan
+                    .repayment_schedule
+                    .last()
+                    .map(|i| i.due_date)
+                    .unwrap_or(0);
+                Self::handle_reputation_increase(
+                    &env,
+                    &reputation_contract,
+                    &updater,
+                    &borrower,
+                    payment_date,
+                    due_date,
+                );
+            }
+        }
 
         Self::exit_non_reentrant(&env);
         Ok(new_balance)
@@ -998,6 +1121,50 @@ impl CreditLineContract {
 
     fn exit_non_reentrant(env: &Env) {
         storage::set_reentrancy_locked(env, false);
+    }
+
+    /// Apply the deterministic repayment waterfall to a loan in place.
+    ///
+    /// Priority order: late fees → interest → service fee → principal.
+    /// Each `*_outstanding` bucket and `remaining_balance` are decremented
+    /// accordingly.  Returns the per-bucket allocation.
+    ///
+    /// A borrower may pay exactly the fee components (late fees + interest +
+    /// service fee) and leave principal untouched.  This is by design — there is
+    /// no code-level minimum-principal check.  The safety net is the fixed loan
+    /// maturity combined with the permissionless [`mark_defaulted`] entry-point,
+    /// which becomes eligible once `now > last_installment_due_date +
+    /// grace_period_seconds`, regardless of how many fee-only payments were made
+    /// in the interim.
+    fn apply_waterfall(
+        loan: &mut Loan,
+        amount: i128,
+    ) -> Result<RepaymentAllocation, CreditLineError> {
+        // late fees → interest → service fee → principal
+        let late_fee_paid = amount.min(loan.late_fees_outstanding);
+        let after_late = safe_math::sub_i128(amount, late_fee_paid)?;
+        let interest_paid = after_late.min(loan.interest_outstanding);
+        let after_interest = safe_math::sub_i128(after_late, interest_paid)?;
+        let service_fee_paid = after_interest.min(loan.service_fee_outstanding);
+        let after_fee = safe_math::sub_i128(after_interest, service_fee_paid)?;
+        let principal_paid = after_fee.min(loan.principal_outstanding);
+
+        loan.late_fees_outstanding =
+            safe_math::sub_i128(loan.late_fees_outstanding, late_fee_paid)?;
+        loan.interest_outstanding =
+            safe_math::sub_i128(loan.interest_outstanding, interest_paid)?;
+        loan.service_fee_outstanding =
+            safe_math::sub_i128(loan.service_fee_outstanding, service_fee_paid)?;
+        loan.principal_outstanding =
+            safe_math::sub_i128(loan.principal_outstanding, principal_paid)?;
+        loan.remaining_balance = safe_math::sub_i128(loan.remaining_balance, amount)?;
+
+        Ok(RepaymentAllocation {
+            late_fee_paid,
+            interest_paid,
+            service_fee_paid,
+            principal_paid,
+        })
     }
 
     fn authorize_token_transfer(env: &Env, token_address: &Address, to: &Address, amount: i128) {

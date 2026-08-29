@@ -34,3 +34,15 @@ pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
         (old_version, new_version, env.ledger().timestamp()),
     );
 }
+
+pub fn emit_upgrade_proposed(
+    env: &Env,
+    wasm_hash: &soroban_sdk::BytesN<32>,
+    proposed_at: u64,
+    unlock_at: u64,
+) {
+    env.events().publish(
+        (symbol_short!("UPGDPRP"),),
+        (wasm_hash.clone(), proposed_at, unlock_at),
+    );
+}

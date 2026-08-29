@@ -440,7 +440,7 @@ fn test_upgrade_rejected_for_non_admin() {
 #[test]
 fn test_admin_upgrade_increments_version_and_emits_event() {
     let env = Env::default();
-    let (client, admin, _vendor) = setup(&env);
+    let (client, _admin, _vendor) = setup(&env);
     env.mock_all_auths();
 
     assert_eq!(client.get_version(), 1u32);
@@ -448,7 +448,9 @@ fn test_admin_upgrade_increments_version_and_emits_event() {
         &env,
         include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
     ));
-    client.upgrade(&wasm_hash);
+    client.propose_upgrade(&wasm_hash);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash);
 
     let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
     let mut found = false;
@@ -460,4 +462,91 @@ fn test_admin_upgrade_increments_version_and_emits_event() {
         }
     }
     assert!(found, "CONTRACTUPGRADED event not found");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_vendor_registry_upgrade_without_propose_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_vendor_registry_upgrade_before_timelock_elapses_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    client.propose_upgrade(&wasm_hash);
+    client.execute_upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_vendor_registry_upgrade_with_wrong_hash_fails() {
+    let env = Env::default();
+    let (client, _admin, _vendor) = setup(&env);
+    env.mock_all_auths();
+
+    let wasm_hash1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    let wasm_hash2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+    client.propose_upgrade(&wasm_hash1);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash2);
+}
+
+#[soroban_sdk::contract]
+pub struct MockParametersContract;
+
+#[soroban_sdk::contractimpl]
+impl MockParametersContract {
+    pub fn get_parameters(_env: Env) -> crate::types::ProtocolParameters {
+        crate::types::ProtocolParameters {
+            min_guarantee_percent: 20,
+            min_reputation_threshold: 50,
+            full_repayment_reward: 10,
+            default_penalty: 20,
+            large_loan_threshold: 5000,
+            large_loan_default_penalty: 30,
+            base_interest_bps: 0,
+            grace_period_seconds: 0,
+            upgrade_delay_seconds: 172_800, // 2 days
+        }
+    }
+}
+
+#[test]
+fn test_vendor_registry_upgrade_delay_parameterized_via_parameters_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(VendorRegistryContract, ());
+    let client = VendorRegistryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let params_id = env.register(MockParametersContract, ());
+    client.set_parameters_contract(&params_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[7u8; 32]);
+    client.propose_upgrade(&wasm_hash);
+
+    // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
+    env.ledger().set_timestamp(86_401);
+    let res = client.try_execute_upgrade(&wasm_hash);
+    let expected_err = soroban_sdk::Error::from_contract_error(Error::UpgradeTimelockNotMet as u32);
+    assert_eq!(res, Err(Ok(expected_err)));
+
+    // Advance past custom 2-day delay (172,801s)
+    env.ledger().set_timestamp(172_801);
+    let wasm_real = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    client.propose_upgrade(&wasm_real);
+    env.ledger().set_timestamp(172_801 + 172_801);
+    client.execute_upgrade(&wasm_real);
 }

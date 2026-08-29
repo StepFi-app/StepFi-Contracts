@@ -12,4 +12,7 @@ pub enum ReputationError {
     Underflow = 5,
     NotInitialized = 6,
     ReentrancyDetected = 7,
+    UpgradeNotProposed = 8,
+    UpgradeTimelockNotMet = 9,
+    UpgradeHashMismatch = 10,
 }

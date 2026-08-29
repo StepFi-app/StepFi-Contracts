@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 use crate::{
     errors::VouchingError,
@@ -7,6 +7,7 @@ use crate::{
 
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 1_036_800;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
@@ -110,6 +111,48 @@ pub fn set_reentrancy_locked(env: &Env, locked: bool) {
 
 pub fn extend_vouch_ttl(env: &Env, mentor: &Address, learner: &Address) {
     extend_persistent_ttl(env, &DataKey::Vouch(mentor.clone(), learner.clone()));
+}
+
+/// Learner reputation score before any active vouch's boost was applied.
+/// `None` while the learner has no active vouches.
+pub fn get_learner_baseline(env: &Env, learner: &Address) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LearnerBaseline(learner.clone()))
+}
+
+pub fn set_learner_baseline(env: &Env, learner: &Address, baseline: u32) {
+    let key = DataKey::LearnerBaseline(learner.clone());
+    env.storage().persistent().set(&key, &baseline);
+    extend_persistent_ttl(env, &key);
+}
+
+pub fn clear_learner_baseline(env: &Env, learner: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::LearnerBaseline(learner.clone()));
+}
+
+/// Aggregate boost currently contributed by all active vouches for a learner.
+pub fn get_total_vouch_boost(env: &Env, learner: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LearnerTotalBoost(learner.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_total_vouch_boost(env: &Env, learner: &Address, total: u32) {
+    let key = DataKey::LearnerTotalBoost(learner.clone());
+    env.storage().persistent().set(&key, &total);
+    extend_persistent_ttl(env, &key);
+}
+
+pub fn get_version(env: &Env) -> Result<u32, VouchingError> {
+    Ok(env.storage().instance().get(&VERSION_KEY).unwrap_or(1u32))
+}
+
+pub fn set_version(env: &Env, v: u32) {
+    env.storage().instance().set(&VERSION_KEY, &v);
 }
 
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {

@@ -37,6 +37,14 @@
       "initMethod": "initialize(token, treasury, admin, merchant_fund)",
       "wasmHash": "5cccbfb7dd2a723110fb299c84636b25d7a437c07092a943b5e4d76f141adf38"
     },
+    "vouching": {
+      "id": "PENDING_DEPLOYMENT",
+      "initialized": false,
+      "initializedAt": null,
+      "initMethod": "initialize(admin, reputation_contract, vouch_boost)",
+      "vouchBoost": 10,
+      "wasmHash": null
+    },
     "creditline": {
       "id": "CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X",
       "initialized": true,

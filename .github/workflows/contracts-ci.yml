@@ -2,9 +2,9 @@ name: Contracts CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ "**" ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ "**" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,7 +29,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'contracts/**/*.rs', 'contracts/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       # creditline-contract embeds the four dependency WASMs via
       # soroban_sdk::contractimport!, so those WASMs must exist before
@@ -44,6 +46,8 @@ jobs:
             -p reputation-contract
           cargo build --locked --target wasm32-unknown-unknown --release \
             -p parameters-contract
+          cargo build --locked --target wasm32-unknown-unknown --release \
+            -p vouching-contract
 
       - name: Build all contracts
         run: |
@@ -51,6 +55,4 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --locked --manifest-path \
-            contracts/creditline-contract/Cargo.toml \
-            2>&1
+          cargo test --locked 2>&1

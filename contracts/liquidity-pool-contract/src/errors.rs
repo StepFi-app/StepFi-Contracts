@@ -18,4 +18,5 @@ pub enum LiquidityPoolError {
     UpgradeNotProposed = 12,
     UpgradeTimelockNotMet = 13,
     UpgradeHashMismatch = 14,
+    ContractPaused = 15,
 }

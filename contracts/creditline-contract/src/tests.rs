@@ -4292,3 +4292,100 @@ fn test_cancel_loan_state_persists_before_transfer() {
     let loan_after = ctx.client.get_loan(&loan_id);
     assert_eq!(loan_after.status, LoanStatus::Cancelled);
 }
+
+// -----------------------------------------------------------------------------
+// Pause / Unpause Emergency Stop Mechanism Tests
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_creditline_pause_unpause_requires_admin() {
+    let t = TestCtx::setup();
+    let non_admin = Address::generate(&t.env);
+
+    assert_eq!(t.client.is_paused(), false);
+
+    // Non-admin cannot pause
+    let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::NotAdmin as u32);
+    assert_eq!(t.client.try_pause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can pause
+    t.client.pause(&t.admin);
+    assert_eq!(t.client.is_paused(), true);
+
+    // Non-admin cannot unpause
+    assert_eq!(t.client.try_unpause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can unpause
+    t.client.unpause(&t.admin);
+    assert_eq!(t.client.is_paused(), false);
+}
+
+#[test]
+fn test_creditline_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries() {
+    let t = RealIntegrationCtx::setup();
+    let provider = Address::generate(&t.env);
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    t.fund_pool(&provider, 10_000);
+    t.register_vendor(&vendor, "Pause Vendor");
+    t.set_score(&user, 60);
+    t.mint(&user, 5_000);
+
+    let now = t.env.ledger().timestamp();
+    let schedule = t.single_installment(1_000, now + 10_000);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    let pending_id =
+        t.creditline
+            .request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Admin pauses creditline contract
+    t.creditline.pause(&t.admin);
+    assert_eq!(t.creditline.is_paused(), true);
+
+    let expected_paused_err = soroban_sdk::Error::from_contract_error(CreditLineError::ContractPaused as u32);
+
+    // Mutating functions blocked with ContractPaused
+    assert_eq!(
+        t.creditline.try_create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_approve_loan(&pending_id),
+        Err(Ok(expected_paused_err))
+    );
+    assert_eq!(
+        t.creditline.try_cancel_loan(&user, &pending_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_mark_defaulted(&loan_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_warn_grace_period(&loan_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+
+    // Repayment Exception Policy: repay_loan and repay_installment are NOT blocked by pause
+    t.mint(&user, 500);
+    assert!(t.creditline.try_repay_loan(&user, &loan_id, &500).is_ok());
+    assert!(t.creditline.try_repay_installment(&user, &loan_id, &0, &500).is_ok());
+
+    // Query functions work fine while paused
+    assert_eq!(t.creditline.get_loan(&loan_id).loan_id, loan_id);
+    assert_eq!(t.creditline.get_user_loans(&user, &0, &10).len(), 2);
+    assert_eq!(t.creditline.get_admin(), t.admin);
+    assert_eq!(t.creditline.get_version(), 1);
+
+    // Unpause restores operations
+    t.creditline.unpause(&t.admin);
+    assert_eq!(t.creditline.is_paused(), false);
+}

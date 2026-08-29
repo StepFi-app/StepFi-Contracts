@@ -37,4 +37,5 @@ pub enum CreditLineError {
     UpgradeHashMismatch = 30,
     InsufficientRefundBalance = 31,
     ReputationCallFailed = 32,
+    ContractPaused = 33,
 }

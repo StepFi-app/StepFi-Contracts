@@ -80,6 +80,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env);
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         Self::validate_vendor(&env, &vendor)?;
@@ -132,6 +133,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env);
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         let score = Self::validate_reputation(&env, &user)?;
@@ -281,6 +283,30 @@ impl CreditLineContract {
         admin.require_auth();
         access::require_admin(&env, &admin);
         storage::set_parameters_contract(&env, &address);
+    }
+
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        storage::set_paused(&env, true);
+        events::emit_paused(&env, &admin);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        storage::set_paused(&env, false);
+        events::emit_unpaused(&env, &admin);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) {
+        if storage::is_paused(env) {
+            panic_with_error!(env, CreditLineError::ContractPaused);
+        }
     }
 
     fn validate_guarantee(
@@ -504,6 +530,7 @@ impl CreditLineContract {
     /// `LoanNotActive` if the loan is not active.  Returns `Ok(())` when the
     /// warning event was successfully emitted (i.e. the loan is in the grace window).
     pub fn warn_grace_period(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env);
         let loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -543,6 +570,7 @@ impl CreditLineContract {
     }
 
     pub fn mark_defaulted(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env);
         let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -644,6 +672,7 @@ impl CreditLineContract {
         // 1. Admin auth - must be first
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env);
 
         // 2. Load loan — panic if not found
         let mut loan =
@@ -716,6 +745,7 @@ impl CreditLineContract {
 
     pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError> {
         caller.require_auth();
+        Self::require_not_paused(&env);
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -761,6 +791,11 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+
+        // Repayment Exception Policy:
+        // Repayments intentionally bypass the contract pause check.
+        // This ensures borrowers are not blocked from settling debt or penalized
+        // with accrued fees during an emergency administrative pause.
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -879,6 +914,11 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+
+        // Repayment Exception Policy:
+        // Repayments intentionally bypass the contract pause check.
+        // This ensures borrowers are not blocked from settling debt or penalized
+        // with accrued fees during an emergency administrative pause.
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 

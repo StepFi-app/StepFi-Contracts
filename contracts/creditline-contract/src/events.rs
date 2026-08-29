@@ -210,3 +210,17 @@ pub fn emit_score_update_failed(
         (is_increase, amount, env.ledger().timestamp()),
     );
 }
+
+pub fn emit_paused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("PAUSED"), admin.clone()),
+        env.ledger().timestamp(),
+    );
+}
+
+pub fn emit_unpaused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("UNPAUSED"), admin.clone()),
+        env.ledger().timestamp(),
+    );
+}

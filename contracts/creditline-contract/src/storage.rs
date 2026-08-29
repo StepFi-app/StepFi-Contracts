@@ -287,3 +287,14 @@ pub fn set_pending_upgrade(env: &Env, upgrade: &crate::types::PendingUpgrade) {
 pub fn clear_pending_upgrade(env: &Env) {
     env.storage().instance().remove(&PENDING_UPGRADE_KEY);
 }
+
+// --- Paused State ---
+pub const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&PAUSED_KEY, &paused);
+}

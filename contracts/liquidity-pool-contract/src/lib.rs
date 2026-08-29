@@ -141,6 +141,24 @@ impl LiquidityPoolContract {
         storage::get_version(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        storage::set_paused(&env, true);
+        events::emit_paused(&env, &admin);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        storage::set_paused(&env, false);
+        events::emit_unpaused(&env, &admin);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
     // -------------------------------------------------------------------------
     // LP Operations
     // -------------------------------------------------------------------------
@@ -148,13 +166,14 @@ impl LiquidityPoolContract {
     /// Deposit `amount` tokens and receive shares representing pool ownership.
     ///
     /// Shares are issued at the current share price:
-    /// `shares = (amount ├ù PRECISION) / share_price`
+    /// `shares = (amount × PRECISION) / share_price`
     ///
     /// For the first deposit share_price == PRECISION, so `shares == amount`.
     ///
     /// Returns the number of shares issued.
     pub fn deposit(env: Env, provider: Address, amount: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
+        Self::require_not_paused(&env);
 
         if amount < types::MIN_AMOUNT {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -169,14 +188,14 @@ impl LiquidityPoolContract {
         let is_first_deposit = total_shares == 0;
 
         if is_first_deposit {
-            // Mint dead (unclaimable) shares to the contract itself ΓÇö nobody can
+            // Mint dead (unclaimable) shares to the contract itself — nobody can
             // withdraw them because `withdraw` requires `provider.require_auth()`.
             //
             // The dead shares are backed by an equal amount of *virtual* liquidity
             // that is NOT stored in `total_liquidity` but is added in
             // `calculate_share_price_internal` as `total_liquidity + DEAD_SHARES_AMOUNT`.
             // This keeps the share price at PRECISION for the first honest depositor
-            // (1:1 share ΓåÆ token) so they are NOT taxed, while keeping visible
+            // (1:1 share → token) so they are NOT taxed, while keeping visible
             // `total_liquidity` equal to real tokens (preserving honest-path stats).
             // The dead shares still prevent a dust depositor from owning 100% of yield.
             storage::set_total_shares(&env, types::DEAD_SHARES_AMOUNT);
@@ -227,11 +246,12 @@ impl LiquidityPoolContract {
 
     /// Burn `shares` and return the proportional token amount to `provider`.
     ///
-    /// `amount = (shares ├ù share_price) / PRECISION`
+    /// `amount = (shares × share_price) / PRECISION`
     ///
     /// Returns the number of tokens returned.
     pub fn withdraw(env: Env, provider: Address, shares: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
+        Self::require_not_paused(&env);
 
         if shares <= 0 {
             return Err(LiquidityPoolError::InvalidAmount);
@@ -246,7 +266,7 @@ impl LiquidityPoolContract {
         }
 
         let share_price = Self::calculate_share_price_internal(&env)?;
-        // Floor-division: the pool always keeps the rounding remainder ΓÇö
+        // Floor-division: the pool always keeps the rounding remainder —
         // the provider receives slightly fewer tokens, never more.
         let amount_returned = safe_math::div_i128(
             safe_math::mul_i128(shares, share_price)?,
@@ -298,6 +318,7 @@ impl LiquidityPoolContract {
         amount: i128,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
+        Self::require_not_paused(&env);
         Self::require_creditline(&env, &creditline);
 
         if amount <= 0 {
@@ -342,6 +363,11 @@ impl LiquidityPoolContract {
         creditline.require_auth();
         Self::require_creditline(&env, &creditline);
 
+        // Repayment Exception Policy:
+        // Loan repayments intentionally bypass the contract pause check.
+        // This ensures borrowers are not blocked from settling loans or penalized
+        // with accrued fees during an emergency administrative pause.
+
         if principal < 0 || interest < 0 {
             return Err(LiquidityPoolError::InvalidAmount);
         }
@@ -382,6 +408,7 @@ impl LiquidityPoolContract {
         amount: i128,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
+        Self::require_not_paused(&env);
         Self::require_creditline(&env, &creditline);
 
         if amount <= 0 {
@@ -389,7 +416,7 @@ impl LiquidityPoolContract {
         }
         Self::enter_non_reentrant(&env);
 
-        // The defaulted loan principal stays "locked" ΓÇö the guarantee partially
+        // The defaulted loan principal stays "locked" — the guarantee partially
         // covers the loss.  We reduce locked_liquidity by the guarantee amount
         // and add it back to total_liquidity (net pool recovers that portion).
         let locked =
@@ -422,6 +449,7 @@ impl LiquidityPoolContract {
         principal_shortfall: i128,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
+        Self::require_not_paused(&env);
         Self::require_creditline(&env, &creditline);
 
         if principal_shortfall <= 0 {
@@ -451,9 +479,9 @@ impl LiquidityPoolContract {
     }
 
     /// Distribute `interest_amount` according to the protocol fee split:
-    ///   - 85 % ΓåÆ Liquidity Providers  (increases share value by raising `total_liquidity`)
-    ///   - 10 % ΓåÆ Protocol Treasury
-    ///   -  5 % ΓåÆ Merchant Incentive Fund
+    ///   - 85 % → Liquidity Providers  (increases share value by raising `total_liquidity`)
+    ///   - 10 % → Protocol Treasury
+    ///   -  5 % → Merchant Incentive Fund
     ///
     /// The LP portion is NOT transferred out; it stays in the pool and inflates
     /// the share price (existing LP shares become worth more).
@@ -468,6 +496,7 @@ impl LiquidityPoolContract {
         interest_amount: i128,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
+        Self::require_not_paused(&env);
         Self::require_creditline(&env, &creditline);
 
         Self::enter_non_reentrant(&env);
@@ -495,15 +524,16 @@ impl LiquidityPoolContract {
     /// the accounting change occurs.
     ///
     /// Fee split (same as `distribute_interest`):
-    ///   - 85 % ΓåÆ Liquidity Providers (share price increase)
-    ///   - 10 % ΓåÆ Protocol Treasury
-    ///   -  5 % ΓåÆ Merchant Incentive Fund
+    ///   - 85 % → Liquidity Providers (share price increase)
+    ///   - 10 % → Protocol Treasury
+    ///   -  5 % → Merchant Incentive Fund
     pub fn accumulate_interest(
         env: Env,
         creditline: Address,
         interest_amount: i128,
     ) -> Result<(), LiquidityPoolError> {
         creditline.require_auth();
+        Self::require_not_paused(&env);
         Self::require_creditline(&env, &creditline);
 
         Self::enter_non_reentrant(&env);
@@ -647,6 +677,12 @@ impl LiquidityPoolContract {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    fn require_not_paused(env: &Env) {
+        if storage::is_paused(env) {
+            panic_with_error!(env, LiquidityPoolError::ContractPaused);
+        }
+    }
 
     fn calculate_share_price_internal(env: &Env) -> Result<i128, LiquidityPoolError> {
         let total_shares = storage::get_total_shares(env)?;

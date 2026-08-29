@@ -186,3 +186,14 @@ pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, LiquidityPo
 pub fn set_parameters_contract(env: &Env, address: &Address) {
     env.storage().instance().set(&PARAMETERS_CONTRACT_KEY, address);
 }
+
+// --- Paused State ---
+pub const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&PAUSED_KEY, &paused);
+}

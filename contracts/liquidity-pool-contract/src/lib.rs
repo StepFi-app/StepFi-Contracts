@@ -21,10 +21,10 @@ impl LiquidityPoolContract {
 
     /// Initialize the contract. Can only be called once.
     ///
-    /// * `admin`        – Contract administrator (can update addresses)
-    /// * `token`        – SEP-41 token used by the pool (e.g. USDC)
-    /// * `treasury`     – Address that receives the 10% protocol fee
-    /// * `merchant_fund`– Address that receives the 5% merchant incentive fee
+    /// * `admin`        ΓÇô Contract administrator (can update addresses)
+    /// * `token`        ΓÇô SEP-41 token used by the pool (e.g. USDC)
+    /// * `treasury`     ΓÇô Address that receives the 10% protocol fee
+    /// * `merchant_fund`ΓÇô Address that receives the 5% merchant incentive fee
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -78,7 +78,7 @@ impl LiquidityPoolContract {
         storage::set_parameters_contract(&env, &address);
     }
 
-    /// Propose a timelocked contract WASM upgrade — admin only
+    /// Propose a timelocked contract WASM upgrade ΓÇö admin only
     pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
@@ -98,7 +98,7 @@ impl LiquidityPoolContract {
         events::emit_upgrade_proposed(&env, &new_wasm_hash, proposed_at, unlock_at);
     }
 
-    /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
+    /// Execute a previously proposed and timelocked contract WASM upgrade ΓÇö admin only
     pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
@@ -129,7 +129,7 @@ impl LiquidityPoolContract {
         events::emit_contract_upgraded(&env, old_version, new_version);
     }
 
-    /// Upgrade the contract WASM — admin only (enforces prior propose_upgrade timelock)
+    /// Upgrade the contract WASM ΓÇö admin only (enforces prior propose_upgrade timelock)
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         Self::execute_upgrade(env, new_wasm_hash);
     }
@@ -148,7 +148,7 @@ impl LiquidityPoolContract {
     /// Deposit `amount` tokens and receive shares representing pool ownership.
     ///
     /// Shares are issued at the current share price:
-    /// `shares = (amount × PRECISION) / share_price`
+    /// `shares = (amount ├ù PRECISION) / share_price`
     ///
     /// For the first deposit share_price == PRECISION, so `shares == amount`.
     ///
@@ -162,7 +162,30 @@ impl LiquidityPoolContract {
 
         Self::enter_non_reentrant(&env);
 
+        // Seed dead (unclaimable) shares on the very first deposit so a dust
+        // depositor cannot own 100 % of a yield-bearing pool.
+        let total_shares = storage::get_total_shares(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let is_first_deposit = total_shares == 0;
+
+        if is_first_deposit {
+            // Mint dead (unclaimable) shares to the contract itself ΓÇö nobody can
+            // withdraw them because `withdraw` requires `provider.require_auth()`.
+            //
+            // The dead shares are backed by an equal amount of *virtual* liquidity
+            // that is NOT stored in `total_liquidity` but is added in
+            // `calculate_share_price_internal` as `total_liquidity + DEAD_SHARES_AMOUNT`.
+            // This keeps the share price at PRECISION for the first honest depositor
+            // (1:1 share ΓåÆ token) so they are NOT taxed, while keeping visible
+            // `total_liquidity` equal to real tokens (preserving honest-path stats).
+            // The dead shares still prevent a dust depositor from owning 100% of yield.
+            storage::set_total_shares(&env, types::DEAD_SHARES_AMOUNT);
+        }
+
+        // With virtual backing the price is (total_liquidity+DEAD)*PRECISION/total_shares,
+        // which for the first deposit is (0+1000)*10000/1000 = 10000 (1:1).
         let share_price = Self::calculate_share_price_internal(&env)?;
+        // Floor-division: depositor always receives fewer shares, never more.
         let shares_issued = safe_math::div_i128(
             safe_math::mul_i128(amount, types::SHARE_PRICE_PRECISION)?,
             share_price,
@@ -180,7 +203,7 @@ impl LiquidityPoolContract {
         let new_shares = safe_math::add_i128(provider_shares, shares_issued)?;
         storage::set_lp_shares(&env, &provider, new_shares);
 
-        // Update total shares
+        // Update total shares (includes dead shares)
         let total_shares = storage::get_total_shares(&env)
             .unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_total_shares = safe_math::add_i128(total_shares, shares_issued)?;
@@ -204,13 +227,13 @@ impl LiquidityPoolContract {
 
     /// Burn `shares` and return the proportional token amount to `provider`.
     ///
-    /// `amount = (shares × share_price) / PRECISION`
+    /// `amount = (shares ├ù share_price) / PRECISION`
     ///
     /// Returns the number of tokens returned.
     pub fn withdraw(env: Env, provider: Address, shares: i128) -> Result<i128, LiquidityPoolError> {
         provider.require_auth();
 
-        if shares < types::MIN_AMOUNT {
+        if shares <= 0 {
             return Err(LiquidityPoolError::InvalidAmount);
         }
 
@@ -223,6 +246,8 @@ impl LiquidityPoolContract {
         }
 
         let share_price = Self::calculate_share_price_internal(&env)?;
+        // Floor-division: the pool always keeps the rounding remainder ΓÇö
+        // the provider receives slightly fewer tokens, never more.
         let amount_returned = safe_math::div_i128(
             safe_math::mul_i128(shares, share_price)?,
             types::SHARE_PRICE_PRECISION,
@@ -364,7 +389,7 @@ impl LiquidityPoolContract {
         }
         Self::enter_non_reentrant(&env);
 
-        // The defaulted loan principal stays "locked" — the guarantee partially
+        // The defaulted loan principal stays "locked" ΓÇö the guarantee partially
         // covers the loss.  We reduce locked_liquidity by the guarantee amount
         // and add it back to total_liquidity (net pool recovers that portion).
         let locked =
@@ -426,9 +451,9 @@ impl LiquidityPoolContract {
     }
 
     /// Distribute `interest_amount` according to the protocol fee split:
-    ///   - 85 % → Liquidity Providers  (increases share value by raising `total_liquidity`)
-    ///   - 10 % → Protocol Treasury
-    ///   -  5 % → Merchant Incentive Fund
+    ///   - 85 % ΓåÆ Liquidity Providers  (increases share value by raising `total_liquidity`)
+    ///   - 10 % ΓåÆ Protocol Treasury
+    ///   -  5 % ΓåÆ Merchant Incentive Fund
     ///
     /// The LP portion is NOT transferred out; it stays in the pool and inflates
     /// the share price (existing LP shares become worth more).
@@ -470,9 +495,9 @@ impl LiquidityPoolContract {
     /// the accounting change occurs.
     ///
     /// Fee split (same as `distribute_interest`):
-    ///   - 85 % → Liquidity Providers (share price increase)
-    ///   - 10 % → Protocol Treasury
-    ///   -  5 % → Merchant Incentive Fund
+    ///   - 85 % ΓåÆ Liquidity Providers (share price increase)
+    ///   - 10 % ΓåÆ Protocol Treasury
+    ///   -  5 % ΓåÆ Merchant Incentive Fund
     pub fn accumulate_interest(
         env: Env,
         creditline: Address,
@@ -506,19 +531,19 @@ impl LiquidityPoolContract {
             types::TOTAL_BPS
         );
 
-        // 85% stays in the pool → increases share value
+        // 85% stays in the pool ΓåÆ increases share value
         let lp_amount = safe_math::div_i128(
             safe_math::mul_i128(interest_amount, types::LP_FEE_BPS)?,
             types::TOTAL_BPS,
         )?;
 
-        // 10% → treasury
+        // 10% ΓåÆ treasury
         let protocol_amount = safe_math::div_i128(
             safe_math::mul_i128(interest_amount, types::PROTOCOL_FEE_BPS)?,
             types::TOTAL_BPS,
         )?;
 
-        // 5% → merchant fund (use remainder to avoid rounding dust)
+        // 5% ΓåÆ merchant fund (use remainder to avoid rounding dust)
         let merchant_amount = safe_math::sub_i128(
             safe_math::sub_i128(interest_amount, lp_amount)?,
             protocol_amount,
@@ -551,7 +576,7 @@ impl LiquidityPoolContract {
             // If merchant fund not configured, fee stays in pool (benefits LPs)
         }
 
-        // LP portion (lp_amount) stays in the pool — no transfer needed.
+        // LP portion (lp_amount) stays in the pool ΓÇö no transfer needed.
         // Update total_liquidity to reflect the added interest (raises share price).
         let total_liquidity =
             storage::get_total_liquidity(env).unwrap_or_else(|err| panic_with_error!(env, err));
@@ -626,13 +651,28 @@ impl LiquidityPoolContract {
     fn calculate_share_price_internal(env: &Env) -> Result<i128, LiquidityPoolError> {
         let total_shares = storage::get_total_shares(env)?;
         let total_liquidity = storage::get_total_liquidity(env)?;
-        if total_shares == 0 || total_liquidity == 0 {
+
+        // Empty pool (no shares at all) ΓÇö price defaults to 1.0.
+        if total_shares == 0 {
             return Ok(types::SHARE_PRICE_PRECISION);
         }
-        safe_math::div_i128(
-            safe_math::mul_i128(total_liquidity, types::SHARE_PRICE_PRECISION)?,
+
+        // Virtual backing: dead shares are backed by an equal virtual liquidity
+        // amount that is NOT stored, but is added here. This keeps the initial
+        // price at 1:1 ( (0+1000)*10000/1000 = 10000 ) and makes post-default
+        // price proportional to real remaining liquidity without hardcoding 0
+        // (which would brick the next deposit). Floor to 1 prevents truncation to 0.
+        let effective_liquidity = safe_math::add_i128(total_liquidity, types::DEAD_SHARES_AMOUNT)?;
+
+        let price = safe_math::div_i128(
+            safe_math::mul_i128(effective_liquidity, types::SHARE_PRICE_PRECISION)?,
             total_shares,
-        )
+        )?;
+        if price == 0 {
+            Ok(1)
+        } else {
+            Ok(price)
+        }
     }
 
     fn require_admin(env: &Env, caller: &Address) {

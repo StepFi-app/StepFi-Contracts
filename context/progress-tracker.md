@@ -16,15 +16,42 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
-### Storage Layout & Bounded Per-User Loan Index Chunking (creditline-contract)
-- **Problem:** Per-borrower loan indexes were previously stored without index vector caps, risking footprint and entry size bloat under high loan counts.
-- **Fix:** Changed storage key layout in `creditline-contract/src/storage.rs` from individual key index to fixed-size persistent pages `DataKey::UserLoanPage(Address, u32)` with `PAGE_SIZE = 32`.
-- Updated `append_user_loan_index` to append loan IDs to the current `UserLoanPage(borrower, page_num)` and immediately call `extend_ttl`.
-- Updated `get_user_loan_ids_paginated` to fetch across chunked page boundaries dynamically given zero-indexed `start` and `limit`.
-- Audited all persistent storage write paths (`write_loan`, `increase_user_active_debt`, `decrease_user_active_debt`, `append_user_loan_index`) ensuring every `.set()` call is paired with an immediate `extend_ttl`.
-- Documented pagination storage contract (`PAGE_SIZE = 32`) in `storage.rs` and `get_user_loans` API doc comments in `lib.rs`.
-- Added `test_200_loan_borrower_stress_and_storage_layout_regression` in `tests.rs` asserting that a 200-loan borrower can create loan #201, query loans across page boundaries (`0..32`, `32..64`, `30..40`, `200..201`), and repay loans without footprint or capacity errors.
-- Verified test suite: 125 tests passing in `creditline-contract`, full workspace suite green.
+### Security: Close Unauthenticated Admin-Claim Branch in Reputation `set_admin()`
+- **Problem:** `set_admin()` in `contracts/reputation-contract/src/lib.rs` contained an unauthenticated fallback branch when no admin was stored, allowing anyone to claim admin of the reputation contract without authorization.
+- **Fix (`reputation-contract`):**
+  - Added explicit, one-time `initialize(env, admin) -> Result<(), ReputationError>` function that requires `admin.require_auth()` and checks `storage::has_admin(&env)` (rejects re-initialization with `AlreadyInitialized = 11`).
+  - Updated `set_admin(env, new_admin) -> Result<(), ReputationError>` to fetch `old_admin = storage::get_admin(&env)?` (panics/returns `NotInitialized` when uninitialized) and enforce `old_admin.require_auth()` + `access::require_admin(&env, &old_admin)`.
+  - Added `has_admin(env)` in `storage.rs`.
+  - Added `AlreadyInitialized` error variant in `errors.rs`.
+  - Added new unit tests covering: unauthenticated first-time `set_admin` rejection (`NotInitialized`), single authorized `initialize`, double initialization rejection (`AlreadyInitialized`), unauthenticated `initialize` rejection, and end-to-end updater flow preservation.
+  - Updated test setup in `reputation-contract/src/tests.rs` and `creditline-contract/src/tests.rs` (`RealIntegrationCtx`), deployment script (`scripts/deploy-testnet.sh`), deployment metadata (`contracts/deployed-testnet.json`), and contract documentation (`contracts/reputation-contract/README.md`).
+
+### `approve_loan` Pending Loan Funding & Re-Validation Fix
+- **Problem:** `approve_loan()` previously activated pending loans without validating vendor status, checking reputation score, or checking available pool liquidity, and without calling `fund_loan()` on the liquidity pool to lock contribution funds or transferring funds to the vendor.
+- **Fix (`creditline-contract`):**
+  - Refactored shared pool funding logic into internal helper `fund_loan_from_pool(&env, borrower, vendor, guarantee_amount, pool_contribution, pull_guarantee)` used by both `create_loan` (`pull_guarantee = true`) and `approve_loan` (`pull_guarantee = false`).
+  - Extended `approve_loan()` to re-validate vendor status (`validate_vendor`), borrower reputation (`validate_reputation`), and pool liquidity (`validate_liquidity`) at approval time before mutating state.
+  - Extended `approve_loan()` to set `funded_at`, increment `user_active_debt`, lock pool funds via `fund_loan_from_pool`, write persistent loan record with TTL extension, and emit both `LOANAPPROVED` and `LOANFNDD` (`LoanFunded`) events.
+  - Added new unit tests covering: vendor funding and liquidity locking on approval, insufficient liquidity rejection (`InsufficientLiquidity`), suspended vendor approval rejection (`VendorNotActive`), decayed reputation approval rejection (`InsufficientReputation`), and double-funding prevention (`InvalidLoanStatus`).
+
+### Issue #82 — First-Depositor Share-Price Inflation Attack Mitigation (revised after audit)
+- **Dead shares with virtual backing**: On first deposit (`total_shares == 0`), mints `DEAD_SHARES_AMOUNT = 1_000` dead shares to `env.current_contract_address()` (unclaimable — `withdraw` requires `provider.require_auth()`). Dead shares are **backed by virtual liquidity**: `calculate_share_price_internal()` computes `(total_liquidity + DEAD_SHARES_AMOUNT) * PRECISION / total_shares` (floor `1`). This preserves honest 1:1 `deposit 1_000 → shares 1_000 → withdraw 1_000` while still preventing a dust depositor from owning 100% of yield (audit gap 1 fixed).
+- **First-deposit share price**: No hardcoded branch. With virtual backing `(0+1_000)*10000/1_000 = 10_000`, the generic formula yields `PRECISION` for the first honest depositor, so share-price semantics are unchanged on the honest path.
+- **`MIN_AMOUNT = 1_000`**: Deposits below `1_000` fail with `InvalidAmount` (#4). Enforced on all deposits; secondary dust defense. Honest `1_000` minimum depositor retains full principal (no 50% tax).
+- **`calculate_share_price_internal` fix**: When `total_shares > 0` but `total_liquidity == 0` (fully-absorbed default), returns **near-zero proportional price** `(0+1_000)*10000/total_shares` (e.g. `909` for `10_000` shares + dead) floored to `1`, **not** hardcoded `0` (which bricked the next `deposit` via divide-by-zero) and **not** `PRECISION` (which hid losses). Coordinated with `absorb_loss()` caps (audit gap 3 fixed).
+- **Withdraw guard**: `shares <= 0` rejected; floor-division in both `deposit` (`shares = amount*PRECISION/price` floored) and `withdraw` (`amount = shares*price/PRECISION` floored) via `safe_math`, never rounding up.
+- **New constants**: `DEAD_SHARES_AMOUNT = 1_000`, `MIN_AMOUNT = 1_000`, `SHARE_PRICE_PRECISION = 10_000` in `types.rs`.
+- **Tests — 107 pass**: Updated existing tests for virtual-backed math; `5` security tests corrected to `1:1`/`9_454`; plus **2 new regression**: `test_honest_path_regression_one_to_one` (proves `1_000→1_000` parity and second depositor `1:1`) and `test_post_default_deposit_does_not_brick` (full `absorb_loss` → price `909` → next `deposit 1_000` succeeds with `>1_000` shares, no divide-by-zero). Creditline integration `test_mark_defaulted_loss_absorption_share_price_impact` updated to `9_454`. Total `cargo test` 107 (liquidity-pool) + 128 (creditline) + others = 362 passing.
+- **Honest-path reconciliation (audit gap)**: Strict `identical results` for *interest-bearing* yield is intentionally not preserved — dead shares (1_000) take a pro-rata `DEAD/(total+DEAD)` share of distributed interest as the cost of preventing the inflation attack. For the minimal `1_000` pool with `85` interest, honest withdraw `1085→1042` (−4.0%) and deposit-after-interest `921→959` (+4.1% shares for same 1_000) reflect this dilution. **Principal is strictly preserved** (`1_000→1_000` 1:1, second depositor `1:1` at same price, full drain leaves `0` real liquidity). For larger pools dilution is negligible (`10_000` pool, `85` interest → `1085` vs `1077` ≈0.7%). This bounded, documented trade-off is accepted: without dead shares an attacker could steal 100% of yield via dust-deposit + donation inflation. The alternative of smaller `DEAD` (e.g. 100) would reduce dilution to <1% but weaken dust protection; `1_000` equals `MIN_AMOUNT` for simplicity and is documented as deliberate.
+
+### Timelocked Contract Upgrades & Version Overflow Safety
+- Routed WASM upgrades through a mandatory two-step timelock (`propose_upgrade` → delay → `execute_upgrade`) across `liquidity-pool-contract`, `creditline-contract`, `reputation-contract`, and `vendor-registry-contract`.
+- Parameterized upgrade delay via `ProtocolParameters` in `parameters-contract` (field `upgrade_delay_seconds: u64`, defaulting to 86,400 seconds / 1 day).
+- Enforced exact committed `wasm_hash` matching and unlock timestamp verification prior to WASM update.
+- Replaced saturating `unwrap_or(old_version)` version increment with `checked_add(1).ok_or(Overflow)`.
+- Emitted `UPGDPRP` (upgrade proposed) and `CONTRACTUPGRADED` events at both steps.
+- Direct `upgrade()` function restricted to call `execute_upgrade()`, enforcing timelocked commit requirements on existing callers.
+- Added comprehensive unit tests in each contract asserting unproposed upgrade fails (`UpgradeNotProposed`), early execution fails (`UpgradeTimelockNotMet`), hash mismatch fails (`UpgradeHashMismatch`), and elapsed execution succeeds and bumps version monotonically.
 
 ### Issue #58 — Principal-Interest-Fee Repayment Waterfall
 - Added `RepaymentAllocation` struct and `apply_waterfall()` helper in `lib.rs` with correct priority: late fees → interest → service fee → principal
@@ -140,6 +167,14 @@ Update this file after every completed contract change, fix, or architectural de
 
 ### Issue #59 — Socialize Default Losses to Pool Share Price
 - Added `absorb_loss(creditline, principal_shortfall)` entrypoint to `liquidity-pool-contract` restricted to the registered CreditLine
+
+### Issue #79 — Admin Auth in Vendor Registry Initialize
+- Added `admin.require_auth()` as the literal first line of `vendor_registry::initialize()` to prevent admin-hijack front-run attacks
+- Reordered guard order to: `require_auth()` → `has_admin` check → state writes, consistent with `parameters-contract` and `liquidity-pool` patterns
+- Wrote test proving unauthorized caller cannot complete initialization (auth failure, not just state rejection)
+- Wrote test proving second `initialize()` call returns `AlreadyInitialized`
+- All existing tests still pass; new test count has not decreased
+- Fixed: No `.unwrap()` or `.expect()` introduced in user-facing paths
 - Reduces both `locked_liquidity` and `total_liquidity` by the unrecovered principal, with independent caps to prevent negative accounting
 - Added `LQLOSS` event (`emit_loss_absorbed`) to liquidity-pool events
 - Updated `mark_defaulted()` to compute `principal_shortfall = principal_outstanding - guarantee_amount` and call `absorb_loss` after `receive_guarantee`
@@ -149,6 +184,17 @@ Update this file after every completed contract change, fix, or architectural de
 - Fixed: `IntoVal` import moved before first usage in `test_mark_defaulted_loss_absorption_share_price_impact`
 
 ## Recently Fixed
+
+### Security: `cancel_loan()` Ordering Discipline, Reentrancy Guard & Pre-Flight Check
+- **Problem:** `cancel_loan()` in `creditline-contract` violated contract ordering discipline by omitting `enter_non_reentrant`/`exit_non_reentrant` guards, executing outbound token transfers before mutating status to `Cancelled` and persisting state, and missing token balance pre-flight validation (causing raw token panic on underfunded contract balance).
+- **Fix:**
+  - Wrapped mutation section in `enter_non_reentrant(&env)` and `exit_non_reentrant(&env)` matching sibling functions.
+  - Reordered execution flow: validate parameters/auth → pre-flight contract token balance check → enter non-reentrant guard → mutate status to `Cancelled` and persist to storage → execute outbound guarantee token refund transfer → emit `LOANCNCL` event → exit non-reentrant guard.
+  - Pre-flight check: queries creditline contract token balance against `loan.guarantee_amount`. If underfunded, returns `Err(CreditLineError::InsufficientRefundBalance)` leaving loan state in `Pending` without panic or state corruption.
+  - Added new error variant `InsufficientRefundBalance = 31` to `CreditLineError`.
+  - Signature updated to `pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError>`.
+- **Files:** `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/tests.rs`
+- **New tests:** 7 comprehensive security & order proof unit tests (happy-case refund, admin cancellation, reentrancy lock rejection, unauthorized caller rejection, double-cancel rejection, underfunded contract typed error, state persistence ordering proof).
 
 ### Security: Unauthorized `distribute_interest` / `accumulate_interest` (SC-17)
 - **Problem:** `distribute_interest()` and `accumulate_interest()` were public mutating functions with no `require_auth()` and no caller restriction. Any funded account could call them with an arbitrary amount, draining the pool's token balance to treasury and merchant fund addresses and inflating the share price so the caller could redeem LP shares for more than deposited.

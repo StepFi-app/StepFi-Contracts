@@ -11,6 +11,7 @@ pub struct ProtocolParameters {
     pub large_loan_default_penalty: u32,
     pub base_interest_bps: u32,
     pub grace_period_seconds: u64,
+    pub upgrade_delay_seconds: u64,
 }
 
 // Loan status enum
@@ -83,6 +84,7 @@ pub fn default_protocol_parameters() -> ProtocolParameters {
         large_loan_default_penalty: 30,
         base_interest_bps: 0,
         grace_period_seconds: 0,
+        upgrade_delay_seconds: 86_400,
     }
 }
 
@@ -93,3 +95,12 @@ pub const SERVICE_FEE_BPS: i128 = 100; // 1% flat service fee
 pub const BPS_DENOMINATOR: i128 = 10_000;
 pub const LATE_FEE_BPS_PER_DAY: i128 = 50; // 0.5% of remaining balance per overdue day
 pub const SECONDS_PER_DAY: u64 = 86_400;
+
+/// Pending timelocked contract upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+    pub proposed_at: u64,
+    pub unlock_at: u64,
+}

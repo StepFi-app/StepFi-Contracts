@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const LOAN_FUNDED: Symbol = symbol_short!("LOANFNDD");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
 
@@ -18,6 +19,27 @@ pub fn emit_loan_approved(env: &Env, loan_id: u64) {
     let topics = (Symbol::new(env, LOANAPPROVED), loan_id);
     env.events().publish(topics, ());
 }
+
+/// Emit a loan funded event upon approval path funding
+pub fn emit_loan_funded(
+    env: &Env,
+    user: &Address,
+    vendor: &Address,
+    loan_id: u64,
+    total_amount: i128,
+    guarantee_amount: i128,
+) {
+    env.events().publish(
+        (LOAN_FUNDED, user, vendor),
+        (
+            loan_id,
+            total_amount,
+            guarantee_amount,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
 
 /// Emit a loan created event
 pub fn emit_loan_created(
@@ -161,5 +183,17 @@ pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
     env.events().publish(
         (Symbol::new(env, "CONTRACTUPGRADED"),),
         (old_version, new_version, env.ledger().timestamp()),
+    );
+}
+
+pub fn emit_upgrade_proposed(
+    env: &Env,
+    wasm_hash: &soroban_sdk::BytesN<32>,
+    proposed_at: u64,
+    unlock_at: u64,
+) {
+    env.events().publish(
+        (symbol_short!("UPGDPRP"),),
+        (wasm_hash.clone(), proposed_at, unlock_at),
     );
 }

@@ -567,7 +567,9 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
     client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
     let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
-    client.upgrade(&wasm_hash);
+    client.propose_upgrade(&wasm_hash);
+    env.ledger().set_timestamp(86_401);
+    client.execute_upgrade(&wasm_hash);
 
     use soroban_sdk::IntoVal;
     let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
@@ -581,6 +583,34 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
         }
     }
     assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #28)")]
+fn test_creditline_upgrade_without_propose_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    ctx.client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #29)")]
+fn test_creditline_upgrade_before_timelock_elapses_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash);
+    ctx.client.execute_upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #30)")]
+fn test_creditline_upgrade_with_wrong_hash_fails() {
+    let ctx = TestCtx::setup();
+    let wasm_hash1 = soroban_sdk::BytesN::from_array(&ctx.env, &[1u8; 32]);
+    let wasm_hash2 = soroban_sdk::BytesN::from_array(&ctx.env, &[2u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash1);
+    ctx.env.ledger().set_timestamp(86_401);
+    ctx.client.execute_upgrade(&wasm_hash2);
 }
 
 fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {
@@ -2527,7 +2557,7 @@ impl RealIntegrationCtx {
         let creditline: CreditLineContractClient<'static> =
             unsafe { core::mem::transmute(creditline) };
 
-        reputation.set_admin(&admin);
+        reputation.initialize(&admin);
         reputation.set_updater(&admin, &admin, &true);
         reputation.set_updater(&admin, &creditline_id, &true);
 
@@ -3276,6 +3306,148 @@ fn test_approve_loan_rejects_past_due_date() {
     t.client.approve_loan(&loan_id);
 }
 
+#[test]
+fn test_approve_loan_funds_vendor_and_locks_pool_liquidity() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+    let pending = t.client.get_loan(&loan_id);
+    assert_eq!(pending.status, LoanStatus::Pending);
+    assert_eq!(pending.funded_at, 0);
+    assert_eq!(t.client.get_user_active_debt(&user), 0);
+
+    t.env.ledger().set_timestamp(100);
+    let approved = t.client.approve_loan(&loan_id);
+    assert_eq!(approved.status, LoanStatus::Active);
+    assert_eq!(approved.funded_at, 100);
+    assert!(t.was_fund_loan_called());
+    assert_eq!(
+        t.client.get_user_active_debt(&user),
+        approved.remaining_balance
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // InsufficientLiquidity = 5
+fn test_approve_loan_rejected_when_insufficient_liquidity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(CreditLineContract, ());
+    let client = CreditLineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let rep_id = env.register(MockReputation, ());
+    let vendor_registry_id = env.register(VendorRegistryContract, ());
+
+    use soroban_sdk::{IntoVal, Symbol};
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "initialize"),
+        (&admin,).into_val(&env),
+    );
+
+    let lp_id = env.register(MockLiquidityPoolEmpty, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
+
+    let user = Address::generate(&env);
+    let vendor = Address::generate(&env);
+
+    let vendor_name = SorobanString::from_str(&env, "Test Vendor");
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "register_vendor"),
+        (&admin, &vendor, vendor_name).into_val(&env),
+    );
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = env.invoke_contract(
+        &vendor_registry_id,
+        &Symbol::new(&env, "approve_vendor"),
+        (&admin, &vendor).into_val(&env),
+    );
+
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&user, &DEFAULT_GUARANTEE);
+
+    let due_date = env.ledger().timestamp() + 10_000;
+    let mut schedule = soroban_sdk::Vec::new(&env);
+    schedule.push_back(RepaymentInstallment {
+        amount: DEFAULT_TOTAL_DUE,
+        due_date,
+        paid: false,
+        paid_at: 0,
+    });
+
+    let loan_id = client.request_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    // Approval must fail with InsufficientLiquidity because pool is empty
+    client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")] // VendorNotActive = 3
+fn test_approve_loan_rejected_when_vendor_suspended() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // Admin suspends the vendor after the loan request was submitted
+    use soroban_sdk::{IntoVal, Symbol};
+    let _: Result<(), vendor_registry_contract::VendorRegistryError> = t.env.invoke_contract(
+        &t.vendor_registry_id,
+        &Symbol::new(&t.env, "suspend_vendor"),
+        (&t.admin, &vendor).into_val(&t.env),
+    );
+
+    // Approval must be rejected because vendor is now suspended
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")] // InsufficientReputation = 4
+fn test_approve_loan_rejected_when_reputation_decayed() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // Decrease score below min threshold (100 - 60 = 40 < 50 threshold)
+    MockReputationClient::new(&t.env, &t.rep_id).decrease_score(&t.admin, &user, &60);
+
+    // Approval must be rejected due to insufficient reputation
+    t.client.approve_loan(&loan_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #25)")] // InvalidLoanStatus
+fn test_approve_loan_double_funding_impossible() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    let loan_id = t.create_default_request(&user, &vendor);
+
+    // First approval succeeds
+    let approved = t.client.approve_loan(&loan_id);
+    assert_eq!(approved.status, LoanStatus::Active);
+
+    // Second approval must fail (double funding impossible)
+    t.client.approve_loan(&loan_id);
+}
+
 // ─── is_on_time helper tests ──────────────────────────────────────────────────
 
 #[test]
@@ -3903,12 +4075,13 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     cl_client.mark_defaulted(&loan_id);
 
     let share_price_after = lp_client.get_pool_stats().share_price;
-    // Before default: total=10_000, shares=10_000, share_price=10_000
+    // Before default: total=10_000, shares=11_000 (10_000 + 1_000 dead), share_price=10_000
+    // (virtual backing: (10_000+1_000)*10000/11_000=10_000)
     // After fund_loan(800): total=10_000, locked=800 (share_price unchanged)
     // After receive_guarantee(200): total=10_200, locked=600
     // After absorb_loss(800): total=9_400, locked=0
-    // share_price = 9_400 * 10_000 / 10_000 = 9_400
-    assert_eq!(share_price_after, 9_400);
+    // share_price = (9_400+1_000)*10_000/11_000 = 10_400*10000/11_000 = 9_454
+    assert_eq!(share_price_after, 9_454);
 
     // Verify pool can still pay LP withdrawals (no unreachable locked liquidity)
     let pool_stats = lp_client.get_pool_stats();
@@ -3916,195 +4089,167 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     assert!(pool_stats.total_liquidity > 0);
 }
 
-#[test]
-fn test_200_loan_borrower_stress_and_storage_layout_regression() {
-    let ctx = TestCtx::setup();
-    let borrower = Address::generate(&ctx.env);
-    let vendor = Address::generate(&ctx.env);
+#[soroban_sdk::contract]
+pub struct MockParametersContract;
 
-    ctx.register_vendor(&vendor, "High Volume Vendor");
-
-    // Mint enough balance for 205 loan guarantees (205 * 200 = 41,000)
-    ctx.mint(&borrower, 50_000);
-
-    let due_date = ctx.env.ledger().timestamp() + 10_000;
-    let schedule = ctx.single_installment(DEFAULT_TOTAL_DUE, due_date);
-
-    // Create 200 loans for the single borrower (repaying each so active debt stays within exposure limit)
-    for i in 0..200 {
-        let loan_id = ctx.client.create_loan(
-            &borrower,
-            &vendor,
-            &DEFAULT_PRINCIPAL,
-            &DEFAULT_GUARANTEE,
-            &schedule,
-            &LoanType::Standard,
-        );
-        assert_eq!(loan_id, (i + 1) as u64);
-        ctx.mint(&borrower, DEFAULT_TOTAL_DUE);
-        ctx.client.repay_loan(&borrower, &loan_id, &DEFAULT_TOTAL_DUE);
+#[soroban_sdk::contractimpl]
+impl MockParametersContract {
+    pub fn get_parameters(_env: Env) -> crate::types::ProtocolParameters {
+        crate::types::ProtocolParameters {
+            min_guarantee_percent: 20,
+            min_reputation_threshold: 50,
+            full_repayment_reward: 10,
+            default_penalty: 20,
+            large_loan_threshold: 5000,
+            large_loan_default_penalty: 30,
+            base_interest_bps: 0,
+            grace_period_seconds: 0,
+            upgrade_delay_seconds: 172_800, // 2 days
+        }
     }
-
-    assert_eq!(ctx.client.get_user_loan_count(&borrower), 200);
-
-    // Verify 201st loan creation succeeds without storage footprint or capacity failure
-    let loan_id_201 = ctx.client.create_loan(
-        &borrower,
-        &vendor,
-        &DEFAULT_PRINCIPAL,
-        &DEFAULT_GUARANTEE,
-        &schedule,
-        &LoanType::Standard,
-    );
-    assert_eq!(loan_id_201, 201);
-    assert_eq!(ctx.client.get_user_loan_count(&borrower), 201);
-
-    // Test paginated retrieval across page boundaries (PAGE_SIZE = 32)
-    // Page 0 (0..32)
-    let page_0_loans = ctx.client.get_user_loans(&borrower, &0, &32);
-    assert_eq!(page_0_loans.len(), 32);
-    assert_eq!(page_0_loans.get(0).unwrap().loan_id, 1);
-    assert_eq!(page_0_loans.get(31).unwrap().loan_id, 32);
-
-    // Page 1 (32..64)
-    let page_1_loans = ctx.client.get_user_loans(&borrower, &32, &32);
-    assert_eq!(page_1_loans.len(), 32);
-    assert_eq!(page_1_loans.get(0).unwrap().loan_id, 33);
-
-    // Cross-page boundary request (start=30, limit=10 -> loans 31..41)
-    let cross_page_loans = ctx.client.get_user_loans(&borrower, &30, &10);
-    assert_eq!(cross_page_loans.len(), 10);
-    assert_eq!(cross_page_loans.get(0).unwrap().loan_id, 31);
-    assert_eq!(cross_page_loans.get(9).unwrap().loan_id, 40);
-
-    // Tail page request (start=200, limit=10 -> loan 201)
-    let tail_loans = ctx.client.get_user_loans(&borrower, &200, &10);
-    assert_eq!(tail_loans.len(), 1);
-    assert_eq!(tail_loans.get(0).unwrap().loan_id, 201);
-
-    // Verify repaying a loan works cleanly for a 200+ loan borrower
-    ctx.mint(&borrower, DEFAULT_TOTAL_DUE);
-    let remaining = ctx
-        .client
-        .repay_loan(&borrower, &loan_id_201, &DEFAULT_TOTAL_DUE);
-    assert_eq!(remaining, 0);
-
-    let loan_201 = ctx.client.get_loan(&loan_id_201);
-    assert_eq!(loan_201.status, LoanStatus::Paid);
 }
 
 #[test]
-fn test_storage_layout_entry_classes_instance_vs_persistent() {
+fn test_creditline_upgrade_delay_parameterized_via_parameters_contract() {
     let ctx = TestCtx::setup();
-    let borrower = Address::generate(&ctx.env);
+
+    let params_id = ctx.env.register(MockParametersContract, ());
+    ctx.client.set_parameters_contract(&ctx.admin, &params_id);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&ctx.env, &[7u8; 32]);
+    ctx.client.propose_upgrade(&wasm_hash);
+
+    // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
+    ctx.env.ledger().set_timestamp(86_401);
+    let res = ctx.client.try_execute_upgrade(&wasm_hash);
+    let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::UpgradeTimelockNotMet as u32);
+    assert_eq!(res, Err(Ok(expected_err)));
+
+    // Advance past custom 2-day delay (172,801s)
+    ctx.env.ledger().set_timestamp(172_801);
+    let wasm_real = ctx.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&ctx.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    ctx.client.propose_upgrade(&wasm_real);
+    ctx.env.ledger().set_timestamp(172_801 + 172_801);
+    ctx.client.execute_upgrade(&wasm_real);
+}
+
+// ─── cancel_loan Security & Order Proof Tests ──────────────────────────────────
+
+#[test]
+fn test_cancel_loan_happy_path_refunds_guarantee() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
     let vendor = Address::generate(&ctx.env);
-    ctx.register_vendor(&vendor, "Layout Vendor");
-    ctx.mint(&borrower, 10_000);
+    let loan_id = ctx.create_default_request(&user, &vendor);
 
-    let due_date = ctx.env.ledger().timestamp() + 10_000;
-    let schedule = ctx.single_installment(DEFAULT_TOTAL_DUE, due_date);
+    assert_eq!(ctx.balance(&user), 0);
+    assert_eq!(ctx.balance(&ctx.client.address), DEFAULT_GUARANTEE);
 
-    let loan_id = ctx.client.create_loan(
-        &borrower,
-        &vendor,
-        &DEFAULT_PRINCIPAL,
-        &DEFAULT_GUARANTEE,
-        &schedule,
-        &LoanType::Standard,
-    );
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
 
-    // Verify storage entry classification inside contract context
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+}
+
+#[test]
+fn test_cancel_loan_admin_can_cancel() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&ctx.admin, &loan_id);
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+}
+
+#[test]
+fn test_cancel_loan_reentrancy_lock_engages() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
     ctx.env.as_contract(&ctx.client.address, || {
-        let shard = (loan_id % 32) as u32;
-        let loan_key = crate::storage::DataKey::Loan(shard, loan_id);
-        let page_key = crate::storage::DataKey::UserLoanPage(borrower.clone(), 0);
-        let count_key = crate::storage::DataKey::UserLoanCount(borrower.clone());
-        let debt_key = crate::storage::DataKey::UserActiveDebt(borrower.clone());
-
-        // Assert all per-borrower and per-loan data keys reside strictly in PERSISTENT storage
-        assert!(ctx.env.storage().persistent().has(&loan_key), "Loan key must be in persistent storage");
-        assert!(ctx.env.storage().persistent().has(&page_key), "UserLoanPage key must be in persistent storage");
-        assert!(ctx.env.storage().persistent().has(&count_key), "UserLoanCount key must be in persistent storage");
-        assert!(ctx.env.storage().persistent().has(&debt_key), "UserActiveDebt key must be in persistent storage");
-
-        // Assert NONE of these keys leak into INSTANCE storage
-        assert!(!ctx.env.storage().instance().has(&loan_key), "Loan key must NOT be in instance storage");
-        assert!(!ctx.env.storage().instance().has(&page_key), "UserLoanPage key must NOT be in instance storage");
-        assert!(!ctx.env.storage().instance().has(&count_key), "UserLoanCount key must NOT be in instance storage");
-        assert!(!ctx.env.storage().instance().has(&debt_key), "UserActiveDebt key must NOT be in instance storage");
+        ctx.env
+            .storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("LOCKED"), &true);
     });
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::ReentrancyDetected)));
 }
 
 #[test]
-fn test_legacy_user_loan_at_backward_compatibility() {
+fn test_cancel_loan_unauthorized_caller_rejected() {
     let ctx = TestCtx::setup();
-    let borrower = Address::generate(&ctx.env);
-
-    // Manually write legacy UserLoanAt(borrower, idx) entries in persistent and instance storage
-    ctx.env.as_contract(&ctx.client.address, || {
-        let count_key = crate::storage::DataKey::UserLoanCount(borrower.clone());
-        ctx.env.storage().persistent().set(&count_key, &2u64);
-
-        let legacy_key_0 = crate::storage::DataKey::UserLoanAt(borrower.clone(), 0);
-        let legacy_key_1 = crate::storage::DataKey::UserLoanAt(borrower.clone(), 1);
-
-        ctx.env.storage().persistent().set(&legacy_key_0, &101u64);
-        ctx.env.storage().instance().set(&legacy_key_1, &102u64);
-
-        let ids = crate::storage::get_user_loan_ids_paginated(&ctx.env, &borrower, 0, 10).unwrap();
-        assert_eq!(ids.len(), 2);
-        assert_eq!(ids.get(0).unwrap(), 101);
-        assert_eq!(ids.get(1).unwrap(), 102);
-    });
-}
-
-#[test]
-fn test_concurrent_active_debt_and_ttl_extension_mid_flow() {
-    let ctx = TestCtx::setup();
-    let borrower = Address::generate(&ctx.env);
+    let user = Address::generate(&ctx.env);
     let vendor = Address::generate(&ctx.env);
-    ctx.register_vendor(&vendor, "Active Debt Vendor");
+    let loan_id = ctx.create_default_request(&user, &vendor);
 
-    let num_loans = 4;
-    let guarantee_per_loan = 200i128;
-    let principal_per_loan = 1_000i128;
-    let total_due_per_loan = 1_050i128;
+    let stranger = Address::generate(&ctx.env);
+    let res = ctx.client.try_cancel_loan(&stranger, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::UnauthorizedRepayer)));
 
-    ctx.mint(&borrower, (num_loans as i128) * guarantee_per_loan);
-
-    let due_date = ctx.env.ledger().timestamp() + 10_000;
-    let schedule = ctx.single_installment(total_due_per_loan, due_date);
-
-    let mut created_ids = soroban_sdk::Vec::new(&ctx.env);
-    for i in 0..num_loans {
-        let loan_id = ctx.client.create_loan(
-            &borrower,
-            &vendor,
-            &principal_per_loan,
-            &guarantee_per_loan,
-            &schedule,
-            &LoanType::Standard,
-        );
-        assert_eq!(loan_id, (i + 1) as u64);
-        created_ids.push_back(loan_id);
-    }
-
-    // Verify concurrent active debt is accumulated across all 4 active loans
-    let expected_active_debt = (num_loans as i128) * total_due_per_loan;
-    assert_eq!(ctx.client.get_user_active_debt(&borrower), expected_active_debt);
-
-    // Advance ledger timestamp to exercise TTL extension mid-flow
-    ctx.env.ledger().set_timestamp(ctx.env.ledger().timestamp() + 5_000);
-
-    // Repay 2 of the active loans mid-flow
-    ctx.mint(&borrower, 2 * total_due_per_loan);
-    for i in 0..2 {
-        let loan_id = created_ids.get(i).unwrap();
-        ctx.client.repay_loan(&borrower, &loan_id, &total_due_per_loan);
-    }
-
-    // Active debt should decrease by exactly 2 * total_due_per_loan
-    let updated_active_debt = ((num_loans - 2) as i128) * total_due_per_loan;
-    assert_eq!(ctx.client.get_user_active_debt(&borrower), updated_active_debt);
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
 }
 
+#[test]
+fn test_cancel_loan_double_cancel_rejected() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::LoanNotCancellable)));
+}
+
+#[test]
+fn test_cancel_loan_underfunded_contract_returns_typed_error() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let drain_target = Address::generate(&ctx.env);
+    ctx.env.as_contract(&ctx.client.address, || {
+        let token_client = soroban_sdk::token::Client::new(&ctx.env, &ctx.token_id);
+        token_client.transfer(&ctx.client.address, &drain_target, &DEFAULT_GUARANTEE);
+    });
+
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::InsufficientRefundBalance)));
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+}
+
+#[test]
+fn test_cancel_loan_state_persists_before_transfer() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+}

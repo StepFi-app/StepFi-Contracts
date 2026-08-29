@@ -314,3 +314,21 @@ pub fn get_version(env: &Env) -> Result<u32, CreditLineError> {
 pub fn set_version(env: &Env, version: u32) {
     env.storage().instance().set(&VERSION_KEY, &version);
 }
+
+// --- Pending Upgrade Timelock ---
+pub const PENDING_UPGRADE_KEY: Symbol = symbol_short!("PNDUPGD");
+pub const DEFAULT_UPGRADE_DELAY_SECONDS: u64 = 86_400; // 1 day
+
+pub fn get_pending_upgrade(
+    env: &Env,
+) -> Result<Option<crate::types::PendingUpgrade>, CreditLineError> {
+    Ok(env.storage().instance().get(&PENDING_UPGRADE_KEY))
+}
+
+pub fn set_pending_upgrade(env: &Env, upgrade: &crate::types::PendingUpgrade) {
+    env.storage().instance().set(&PENDING_UPGRADE_KEY, upgrade);
+}
+
+pub fn clear_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&PENDING_UPGRADE_KEY);
+}

@@ -17,6 +17,11 @@ pub fn get_admin(env: &Env) -> Result<Address, ReputationError> {
         .ok_or(ReputationError::NotInitialized)
 }
 
+/// Check if an admin is set in storage
+pub fn has_admin(env: &Env) -> bool {
+    env.storage().instance().has(&ADMIN_KEY)
+}
+
 /// Set the admin address in storage
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&ADMIN_KEY, admin);
@@ -91,4 +96,33 @@ pub fn get_version(env: &Env) -> Result<u32, ReputationError> {
 
 pub fn set_version(env: &Env, v: u32) {
     env.storage().instance().set(&VERSION_KEY, &v);
+}
+
+// --- Pending Upgrade Timelock ---
+pub const PENDING_UPGRADE_KEY: Symbol = symbol_short!("PNDUPGD");
+pub const DEFAULT_UPGRADE_DELAY_SECONDS: u64 = 86_400; // 1 day
+
+pub fn get_pending_upgrade(
+    env: &Env,
+) -> Result<Option<crate::types::PendingUpgrade>, ReputationError> {
+    Ok(env.storage().instance().get(&PENDING_UPGRADE_KEY))
+}
+
+pub fn set_pending_upgrade(env: &Env, upgrade: &crate::types::PendingUpgrade) {
+    env.storage().instance().set(&PENDING_UPGRADE_KEY, upgrade);
+}
+
+pub fn clear_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&PENDING_UPGRADE_KEY);
+}
+
+// --- Parameters Contract ---
+pub const PARAMETERS_CONTRACT_KEY: Symbol = symbol_short!("PARAMS");
+
+pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, ReputationError> {
+    Ok(env.storage().instance().get(&PARAMETERS_CONTRACT_KEY))
+}
+
+pub fn set_parameters_contract(env: &Env, address: &Address) {
+    env.storage().instance().set(&PARAMETERS_CONTRACT_KEY, address);
 }

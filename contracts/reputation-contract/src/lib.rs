@@ -184,46 +184,125 @@ impl ReputationContract {
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
     }
 
-    /// Set the admin address for this contract
-    /// Requires authorization from current admin (or allows initial setup)
-    pub fn set_admin(env: Env, new_admin: Address) {
-        let old_admin_opt: Option<Address> = env.storage().instance().get(&storage::ADMIN_KEY);
+    /// Initialize the contract with an admin. Can only be called once.
+    /// Requires authorization from admin.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ReputationError> {
+        admin.require_auth();
 
-        if let Some(old_admin) = old_admin_opt {
-            // Admin exists, require current admin authorization
-            old_admin.require_auth();
-            access::require_admin(&env, &old_admin);
-
-            Self::enter_non_reentrant(&env);
-
-            storage::set_admin(&env, &new_admin);
-            events::emit_admin_changed(&env, &old_admin, &new_admin);
-
-            Self::exit_non_reentrant(&env);
-        } else {
-            // No admin exists, allow setting (initialization)
-            storage::set_admin(&env, &new_admin);
-            let dummy = new_admin.clone();
-            events::emit_admin_changed(&env, &dummy, &new_admin);
+        if storage::has_admin(&env) {
+            return Err(ReputationError::AlreadyInitialized);
         }
+
+        Self::enter_non_reentrant(&env);
+
+        storage::set_admin(&env, &admin);
+        events::emit_admin_changed(&env, &admin, &admin);
+
+        Self::exit_non_reentrant(&env);
+        Ok(())
     }
 
-    /// Upgrade the contract WASM — admin only
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+    /// Set the admin address for this contract
+    /// Requires authorization from current admin
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ReputationError> {
+        let old_admin = storage::get_admin(&env)?;
+
+        old_admin.require_auth();
+        access::require_admin(&env, &old_admin);
+
+        Self::enter_non_reentrant(&env);
+
+        storage::set_admin(&env, &new_admin);
+        events::emit_admin_changed(&env, &old_admin, &new_admin);
+
+        Self::exit_non_reentrant(&env);
+        Ok(())
+    }
+
+    pub fn set_parameters_contract(env: Env, address: Address) {
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        admin.require_auth();
+        storage::set_parameters_contract(&env, &address);
+    }
+
+    /// Propose a timelocked contract WASM upgrade — admin only
+    pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env)
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
 
+        let delay = Self::get_upgrade_delay_seconds(&env);
+        let proposed_at = env.ledger().timestamp();
+        let unlock_at = proposed_at
+            .checked_add(delay)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ReputationError::Overflow));
+
+        let pending = types::PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            proposed_at,
+            unlock_at,
+        };
+        storage::set_pending_upgrade(&env, &pending);
+        events::emit_upgrade_proposed(&env, &new_wasm_hash, proposed_at, unlock_at);
+    }
+
+    /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
+    pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let pending = storage::get_pending_upgrade(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
+            .ok_or(ReputationError::UpgradeNotProposed)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+
+        if pending.wasm_hash != new_wasm_hash {
+            soroban_sdk::panic_with_error!(&env, ReputationError::UpgradeHashMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < pending.unlock_at {
+            soroban_sdk::panic_with_error!(&env, ReputationError::UpgradeTimelockNotMet);
+        }
+
         Self::enter_non_reentrant(&env);
         let old = storage::get_version(&env).unwrap_or(1u32);
-        let new = old.checked_add(1).unwrap_or(old);
+        let new = old
+            .checked_add(1)
+            .ok_or(ReputationError::Overflow)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         storage::set_version(&env, new);
+
+        storage::clear_pending_upgrade(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::emit_contract_upgraded(&env, old, new);
         Self::exit_non_reentrant(&env);
     }
+
+    /// Upgrade the contract WASM — admin only (enforces prior propose_upgrade timelock)
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::execute_upgrade(env, new_wasm_hash);
+    }
     pub fn get_admin(env: Env) -> Result<Address, ReputationError> {
         storage::get_admin(&env)
+    }
+
+    fn get_upgrade_delay_seconds(env: &Env) -> u64 {
+        use soroban_sdk::IntoVal;
+        if let Ok(Some(params_addr)) = storage::get_parameters_contract(env) {
+            if let Ok(Ok(params)) = env.try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
+                &params_addr,
+                &soroban_sdk::Symbol::new(env, "get_parameters"),
+                ().into_val(env),
+            ) {
+                if params.upgrade_delay_seconds > 0 {
+                    return params.upgrade_delay_seconds;
+                }
+            }
+        }
+        storage::DEFAULT_UPGRADE_DELAY_SECONDS
     }
 
     fn enter_non_reentrant(env: &Env) {

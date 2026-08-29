@@ -106,7 +106,7 @@ impl CreditLineContract {
         storage::write_loan(&env, &loan);
 
         let pool_contribution = safe_math::sub_i128(total_amount, guarantee_amount)?;
-        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution);
+        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution, true);
 
         events::emit_loan_created(
             &env,
@@ -198,18 +198,66 @@ impl CreditLineContract {
         storage::set_admin(&env, &new_admin);
     }
 
-    /// Upgrade the contract WASM — admin only
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+    /// Propose a timelocked contract WASM upgrade — admin only
+    pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
 
-        // bump stored version and emit event
+        let params = Self::get_protocol_parameters(&env);
+        let delay = if params.upgrade_delay_seconds > 0 {
+            params.upgrade_delay_seconds
+        } else {
+            storage::DEFAULT_UPGRADE_DELAY_SECONDS
+        };
+
+        let proposed_at = env.ledger().timestamp();
+        let unlock_at = proposed_at
+            .checked_add(delay)
+            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::Overflow));
+
+        let pending = types::PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            proposed_at,
+            unlock_at,
+        };
+        storage::set_pending_upgrade(&env, &pending);
+        events::emit_upgrade_proposed(&env, &new_wasm_hash, proposed_at, unlock_at);
+    }
+
+    /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
+    pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        admin.require_auth();
+
+        let pending = storage::get_pending_upgrade(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+            .ok_or(CreditLineError::UpgradeNotProposed)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        if pending.wasm_hash != new_wasm_hash {
+            panic_with_error!(&env, CreditLineError::UpgradeHashMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < pending.unlock_at {
+            panic_with_error!(&env, CreditLineError::UpgradeTimelockNotMet);
+        }
+
         let old_version = storage::get_version(&env).unwrap_or(1u32);
-        let new_version = old_version.checked_add(1).unwrap_or(old_version);
+        let new_version = old_version
+            .checked_add(1)
+            .ok_or(CreditLineError::Overflow)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
         storage::set_version(&env, new_version);
 
+        storage::clear_pending_upgrade(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::emit_contract_upgraded(&env, old_version, new_version);
+    }
+
+    /// Upgrade the contract WASM — admin only (enforces prior propose_upgrade timelock)
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::execute_upgrade(env, new_wasm_hash);
     }
     pub fn get_admin(env: Env) -> Result<Address, CreditLineError> {
         storage::get_admin(&env)
@@ -334,17 +382,20 @@ impl CreditLineContract {
         vendor: &Address,
         guarantee_amount: i128,
         pool_contribution: i128,
+        pull_guarantee: bool,
     ) {
         let liquidity_pool = storage::get_liquidity_pool(env)
             .unwrap_or_else(|err| panic_with_error!(env, err))
             .unwrap_or_else(|| panic_with_error!(env, CreditLineError::InsufficientLiquidity));
 
-        let token_address = storage::get_token(env)
-            .unwrap_or_else(|err| panic_with_error!(env, err))
-            .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
+        if pull_guarantee {
+            let token_address = storage::get_token(env)
+                .unwrap_or_else(|err| panic_with_error!(env, err))
+                .unwrap_or_else(|| panic_with_error!(env, CreditLineError::TokenNotConfigured));
 
-        let token_client = token::Client::new(env, &token_address);
-        token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+            let token_client = token::Client::new(env, &token_address);
+            token_client.transfer(borrower, &env.current_contract_address(), &guarantee_amount);
+        }
 
         if pool_contribution > 0 {
             let lp_client = LiquidityPoolContractClient::new(env, &liquidity_pool);
@@ -602,46 +653,94 @@ impl CreditLineContract {
             }
         }
 
-        // 4. Transition to Active
-        loan.status = LoanStatus::Active;
+        // 4. Re-validate vendor status, borrower reputation, and liquidity availability at approval time
+        Self::validate_vendor(&env, &loan.vendor)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_reputation(&env, &loan.borrower)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::validate_liquidity(&env, loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
-        // 5. Write back with TTL extension
+        // 5. Enter non-reentrant section
+        Self::enter_non_reentrant(&env);
+
+        // 6. Transition status to Active and record funded_at
+        loan.status = LoanStatus::Active;
+        loan.funded_at = env.ledger().timestamp();
+
+        // 7. Increment user active debt
+        storage::increase_user_active_debt(&env, &loan.borrower, loan.remaining_balance)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        // 8. Fund loan contribution from liquidity pool (guarantee was already transferred at request)
+        let pool_contribution = safe_math::sub_i128(loan.total_amount, loan.guarantee_amount)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        Self::fund_loan_from_pool(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan.guarantee_amount,
+            pool_contribution,
+            false,
+        );
+
+        // 9. Write back with TTL extension
         storage::write_loan(&env, &loan);
 
-        // 6. Emit event
+        // 10. Emit events
         events::emit_loan_approved(&env, loan_id);
+        events::emit_loan_funded(
+            &env,
+            &loan.borrower,
+            &loan.vendor,
+            loan_id,
+            loan.total_amount,
+            loan.guarantee_amount,
+        );
+
+        Self::exit_non_reentrant(&env);
 
         loan
     }
 
-    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {
+    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError> {
         caller.require_auth();
 
-        let mut loan =
-            storage::read_loan(&env, loan_id).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Pending {
-            panic_with_error!(&env, CreditLineError::LoanNotCancellable);
+            return Err(CreditLineError::LoanNotCancellable);
         }
 
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)?;
         if caller != loan.borrower && caller != admin {
-            panic_with_error!(&env, CreditLineError::UnauthorizedRepayer);
+            return Err(CreditLineError::UnauthorizedRepayer);
         }
 
-        let token_address = storage::get_token(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err))
-            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::TokenNotConfigured));
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
         let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &loan.borrower,
-            &loan.guarantee_amount,
-        );
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance < loan.guarantee_amount {
+            return Err(CreditLineError::InsufficientRefundBalance);
+        }
+
+        Self::enter_non_reentrant(&env);
 
         loan.status = LoanStatus::Cancelled;
         storage::write_loan(&env, &loan);
+
+        if loan.guarantee_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &loan.borrower,
+                &loan.guarantee_amount,
+            );
+        }
+
         events::emit_loan_cancelled(&env, &loan.borrower, loan_id, loan.guarantee_amount);
+        Self::exit_non_reentrant(&env);
+
+        Ok(())
     }
 
     pub fn repay_loan(

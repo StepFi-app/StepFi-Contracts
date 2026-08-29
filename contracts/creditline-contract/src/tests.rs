@@ -2557,7 +2557,7 @@ impl RealIntegrationCtx {
         let creditline: CreditLineContractClient<'static> =
             unsafe { core::mem::transmute(creditline) };
 
-        reputation.set_admin(&admin);
+        reputation.initialize(&admin);
         reputation.set_updater(&admin, &admin, &true);
         reputation.set_updater(&admin, &creditline_id, &true);
 

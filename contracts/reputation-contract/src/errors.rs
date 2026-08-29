@@ -15,4 +15,5 @@ pub enum ReputationError {
     UpgradeNotProposed = 8,
     UpgradeTimelockNotMet = 9,
     UpgradeHashMismatch = 10,
+    AlreadyInitialized = 11,
 }

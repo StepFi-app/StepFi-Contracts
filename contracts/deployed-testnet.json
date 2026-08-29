@@ -20,7 +20,7 @@
       "id": "CC3BO57ZRJGA63QJBIBSOMI25Z3X2I5CYTARYRAUXUAILX6L3OWBL5SB",
       "initialized": true,
       "initializedAt": "2026-05-11",
-      "initMethod": "set_admin(new_admin)",
+      "initMethod": "initialize(admin)",
       "wasmHash": "548ad3c1e0bca85a7adccb883879ed02e6bf93970d8af06ac8506d487a115da4"
     },
     "vendorRegistry": {

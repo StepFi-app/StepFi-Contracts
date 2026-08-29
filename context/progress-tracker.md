@@ -16,6 +16,16 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Security: Close Unauthenticated Admin-Claim Branch in Reputation `set_admin()`
+- **Problem:** `set_admin()` in `contracts/reputation-contract/src/lib.rs` contained an unauthenticated fallback branch when no admin was stored, allowing anyone to claim admin of the reputation contract without authorization.
+- **Fix (`reputation-contract`):**
+  - Added explicit, one-time `initialize(env, admin) -> Result<(), ReputationError>` function that requires `admin.require_auth()` and checks `storage::has_admin(&env)` (rejects re-initialization with `AlreadyInitialized = 11`).
+  - Updated `set_admin(env, new_admin) -> Result<(), ReputationError>` to fetch `old_admin = storage::get_admin(&env)?` (panics/returns `NotInitialized` when uninitialized) and enforce `old_admin.require_auth()` + `access::require_admin(&env, &old_admin)`.
+  - Added `has_admin(env)` in `storage.rs`.
+  - Added `AlreadyInitialized` error variant in `errors.rs`.
+  - Added new unit tests covering: unauthenticated first-time `set_admin` rejection (`NotInitialized`), single authorized `initialize`, double initialization rejection (`AlreadyInitialized`), unauthenticated `initialize` rejection, and end-to-end updater flow preservation.
+  - Updated test setup in `reputation-contract/src/tests.rs` and `creditline-contract/src/tests.rs` (`RealIntegrationCtx`), deployment script (`scripts/deploy-testnet.sh`), deployment metadata (`contracts/deployed-testnet.json`), and contract documentation (`contracts/reputation-contract/README.md`).
+
 ### `approve_loan` Pending Loan Funding & Re-Validation Fix
 - **Problem:** `approve_loan()` previously activated pending loans without validating vendor status, checking reputation score, or checking available pool liquidity, and without calling `fund_loan()` on the liquidity pool to lock contribution funds or transferring funds to the vendor.
 - **Fix (`creditline-contract`):**

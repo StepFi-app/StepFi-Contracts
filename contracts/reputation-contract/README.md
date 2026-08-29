@@ -28,7 +28,8 @@ The Reputation Contract provides a decentralized way to track and update user re
 - `set_score(updater: Address, user: Address, new_score: u32)` - Set a user's score to a specific value (requires updater auth)
 
 ### Admin Operations
-- `set_admin(new_admin: Address)` - Set the admin address (requires current admin auth or initialization)
+- `initialize(admin: Address)` - Initialize the contract with an admin (requires admin auth, can only be called once)
+- `set_admin(new_admin: Address)` - Transfer admin to a new address (requires current admin auth)
 - `get_admin() -> Address` - Get the current admin address
 
 ### Updater Operations

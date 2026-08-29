@@ -184,28 +184,39 @@ impl ReputationContract {
             .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err))
     }
 
-    /// Set the admin address for this contract
-    /// Requires authorization from current admin (or allows initial setup)
-    pub fn set_admin(env: Env, new_admin: Address) {
-        let old_admin_opt: Option<Address> = env.storage().instance().get(&storage::ADMIN_KEY);
+    /// Initialize the contract with an admin. Can only be called once.
+    /// Requires authorization from admin.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ReputationError> {
+        admin.require_auth();
 
-        if let Some(old_admin) = old_admin_opt {
-            // Admin exists, require current admin authorization
-            old_admin.require_auth();
-            access::require_admin(&env, &old_admin);
-
-            Self::enter_non_reentrant(&env);
-
-            storage::set_admin(&env, &new_admin);
-            events::emit_admin_changed(&env, &old_admin, &new_admin);
-
-            Self::exit_non_reentrant(&env);
-        } else {
-            // No admin exists, allow setting (initialization)
-            storage::set_admin(&env, &new_admin);
-            let dummy = new_admin.clone();
-            events::emit_admin_changed(&env, &dummy, &new_admin);
+        if storage::has_admin(&env) {
+            return Err(ReputationError::AlreadyInitialized);
         }
+
+        Self::enter_non_reentrant(&env);
+
+        storage::set_admin(&env, &admin);
+        events::emit_admin_changed(&env, &admin, &admin);
+
+        Self::exit_non_reentrant(&env);
+        Ok(())
+    }
+
+    /// Set the admin address for this contract
+    /// Requires authorization from current admin
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ReputationError> {
+        let old_admin = storage::get_admin(&env)?;
+
+        old_admin.require_auth();
+        access::require_admin(&env, &old_admin);
+
+        Self::enter_non_reentrant(&env);
+
+        storage::set_admin(&env, &new_admin);
+        events::emit_admin_changed(&env, &old_admin, &new_admin);
+
+        Self::exit_non_reentrant(&env);
+        Ok(())
     }
 
     pub fn set_parameters_contract(env: Env, address: Address) {

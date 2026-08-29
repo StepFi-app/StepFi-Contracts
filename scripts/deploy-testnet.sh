@@ -106,9 +106,8 @@ stellar contract invoke --id $PARAMETERS_ID --source $SOURCE --network $NETWORK 
   -- initialize_defaults --admin $SOURCE 2>&1 | tail -1
 
 echo "Initializing reputation..."
-# reputation has no `initialize` — first set_admin call (no prior admin) seeds it.
 stellar contract invoke --id $REPUTATION_ID --source $SOURCE --network $NETWORK \
-  -- set_admin --new_admin $ADMIN_PUBKEY 2>&1 | tail -1
+  -- initialize --admin $ADMIN_PUBKEY 2>&1 | tail -1
 
 echo "Initializing vendor_registry..."
 stellar contract invoke --id $VENDOR_REGISTRY_ID --source $SOURCE --network $NETWORK \
@@ -180,7 +179,7 @@ cat > contracts/deployed-testnet.json << JSONEOF
       "id": "$REPUTATION_ID",
       "initialized": true,
       "initializedAt": "$TODAY",
-      "initMethod": "set_admin(new_admin)"
+      "initMethod": "initialize(admin)"
     },
     "vendorRegistry": {
       "id": "$VENDOR_REGISTRY_ID",

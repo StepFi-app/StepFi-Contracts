@@ -157,6 +157,14 @@ Update this file after every completed contract change, fix, or architectural de
 
 ### Issue #59 — Socialize Default Losses to Pool Share Price
 - Added `absorb_loss(creditline, principal_shortfall)` entrypoint to `liquidity-pool-contract` restricted to the registered CreditLine
+
+### Issue #79 — Admin Auth in Vendor Registry Initialize
+- Added `admin.require_auth()` as the literal first line of `vendor_registry::initialize()` to prevent admin-hijack front-run attacks
+- Reordered guard order to: `require_auth()` → `has_admin` check → state writes, consistent with `parameters-contract` and `liquidity-pool` patterns
+- Wrote test proving unauthorized caller cannot complete initialization (auth failure, not just state rejection)
+- Wrote test proving second `initialize()` call returns `AlreadyInitialized`
+- All existing tests still pass; new test count has not decreased
+- Fixed: No `.unwrap()` or `.expect()` introduced in user-facing paths
 - Reduces both `locked_liquidity` and `total_liquidity` by the unrecovered principal, with independent caps to prevent negative accounting
 - Added `LQLOSS` event (`emit_loss_absorbed`) to liquidity-pool events
 - Updated `mark_defaulted()` to compute `principal_shortfall = principal_outstanding - guarantee_amount` and call `absorb_loss` after `receive_guarantee`

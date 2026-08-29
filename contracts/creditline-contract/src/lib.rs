@@ -699,34 +699,44 @@ impl CreditLineContract {
         loan
     }
 
-    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {
+    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError> {
         caller.require_auth();
 
-        let mut loan =
-            storage::read_loan(&env, loan_id).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Pending {
-            panic_with_error!(&env, CreditLineError::LoanNotCancellable);
+            return Err(CreditLineError::LoanNotCancellable);
         }
 
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)?;
         if caller != loan.borrower && caller != admin {
-            panic_with_error!(&env, CreditLineError::UnauthorizedRepayer);
+            return Err(CreditLineError::UnauthorizedRepayer);
         }
 
-        let token_address = storage::get_token(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err))
-            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::TokenNotConfigured));
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
         let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &loan.borrower,
-            &loan.guarantee_amount,
-        );
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance < loan.guarantee_amount {
+            return Err(CreditLineError::InsufficientRefundBalance);
+        }
+
+        Self::enter_non_reentrant(&env);
 
         loan.status = LoanStatus::Cancelled;
         storage::write_loan(&env, &loan);
+
+        if loan.guarantee_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &loan.borrower,
+                &loan.guarantee_amount,
+            );
+        }
+
         events::emit_loan_cancelled(&env, &loan.borrower, loan_id, loan.guarantee_amount);
+        Self::exit_non_reentrant(&env);
+
+        Ok(())
     }
 
     pub fn repay_loan(

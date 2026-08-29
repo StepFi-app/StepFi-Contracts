@@ -35,4 +35,5 @@ pub enum CreditLineError {
     UpgradeNotProposed = 28,
     UpgradeTimelockNotMet = 29,
     UpgradeHashMismatch = 30,
+    InsufficientRefundBalance = 31,
 }

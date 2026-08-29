@@ -4075,12 +4075,13 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     cl_client.mark_defaulted(&loan_id);
 
     let share_price_after = lp_client.get_pool_stats().share_price;
-    // Before default: total=10_000, shares=10_000, share_price=10_000
+    // Before default: total=10_000, shares=11_000 (10_000 + 1_000 dead), share_price=10_000
+    // (virtual backing: (10_000+1_000)*10000/11_000=10_000)
     // After fund_loan(800): total=10_000, locked=800 (share_price unchanged)
     // After receive_guarantee(200): total=10_200, locked=600
     // After absorb_loss(800): total=9_400, locked=0
-    // share_price = 9_400 * 10_000 / 10_000 = 9_400
-    assert_eq!(share_price_after, 9_400);
+    // share_price = (9_400+1_000)*10_000/11_000 = 10_400*10000/11_000 = 9_454
+    assert_eq!(share_price_after, 9_454);
 
     // Verify pool can still pay LP withdrawals (no unreachable locked liquidity)
     let pool_stats = lp_client.get_pool_stats();

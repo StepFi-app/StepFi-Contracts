@@ -185,6 +185,20 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Recently Fixed
 
+### Security: Contract Pause & Unpause Emergency Stop Mechanism
+- **Problem:** Neither `liquidity-pool-contract` nor `creditline-contract` implemented a pause/unpause emergency stop mechanism. During an exploit or bad parameterization, there was no way to halt state transitions (deposits, withdrawals, loan funding, loan creation, defaults) without an emergency WASM upgrade.
+- **Fix:**
+  - Implemented `paused: bool` in instance storage (`storage::is_paused`, `storage::set_paused`).
+  - Added `pause(env, admin)` and `unpause(env, admin)` functions restricted to contract admin (`admin.require_auth()` as the literal first line), emitting `PAUSED` and `UNPAUSED` events.
+  - Added `is_paused(env) -> bool` view function.
+  - Guarded all state-mutating entry points (`deposit`, `withdraw`, `fund_loan`, `receive_guarantee`, `absorb_loss`, `distribute_interest`, `accumulate_interest` in `liquidity-pool-contract`; `create_loan`, `request_loan`, `approve_loan`, `cancel_loan`, `mark_defaulted`, `warn_grace_period` in `creditline-contract`) with `require_not_paused(&env)` helper.
+  - **Repayment Exception Policy:** Loan repayments (`repay_loan`, `repay_installment`, `receive_repayment`) intentionally bypass pause checks so borrowers are not penalized with accrued late fees or forced defaults during an administrative freeze. Documented in code comments and unit tests.
+  - Query functions (`get_share_price`, `get_pool_stats`, `get_lp_shares`, `calculate_withdrawal`, `get_loan`, `get_user_loans`, `get_user_active_debt`, `get_version`, `get_admin`) remain 100% accessible while paused.
+  - Added `ContractPaused = 15` variant to `LiquidityPoolError` and `ContractPaused = 33` variant to `CreditLineError`.
+- **Files:** `contracts/liquidity-pool-contract/src/lib.rs`, `contracts/liquidity-pool-contract/src/storage.rs`, `contracts/liquidity-pool-contract/src/events.rs`, `contracts/liquidity-pool-contract/src/errors.rs`, `contracts/liquidity-pool-contract/src/tests.rs`, `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/storage.rs`, `contracts/creditline-contract/src/events.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/tests.rs`, `context/progress-tracker.md`
+- **New tests:** Comprehensive unit tests in both contract suites testing admin-only pause/unpause, mutating function rejection with `ContractPaused`, repayment exception policy execution, and query availability while paused.
+- **Verification:** All 142 tests in `creditline-contract`, 109 tests in `liquidity-pool-contract`, and 393 tests across the entire workspace passed with zero failures.
+
 ### Security: `cancel_loan()` Ordering Discipline, Reentrancy Guard & Pre-Flight Check
 - **Problem:** `cancel_loan()` in `creditline-contract` violated contract ordering discipline by omitting `enter_non_reentrant`/`exit_non_reentrant` guards, executing outbound token transfers before mutating status to `Cancelled` and persisting state, and missing token balance pre-flight validation (causing raw token panic on underfunded contract balance).
 - **Fix:**

@@ -78,3 +78,17 @@ pub fn emit_upgrade_proposed(
         (wasm_hash.clone(), proposed_at, unlock_at),
     );
 }
+
+pub fn emit_paused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("PAUSED"), admin),
+        env.ledger().timestamp(),
+    );
+}
+
+pub fn emit_unpaused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("UNPAUSED"), admin),
+        env.ledger().timestamp(),
+    );
+}

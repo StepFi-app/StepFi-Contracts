@@ -11,6 +11,7 @@ pub struct ProtocolParameters {
     pub large_loan_default_penalty: u32,
     pub base_interest_bps: u32,
     pub grace_period_seconds: u64,
+    pub late_fee_bps: u32,
 }
 
 // Loan status enum
@@ -83,6 +84,7 @@ pub fn default_protocol_parameters() -> ProtocolParameters {
         large_loan_default_penalty: 30,
         base_interest_bps: 0,
         grace_period_seconds: 0,
+        late_fee_bps: 500,
     }
 }
 

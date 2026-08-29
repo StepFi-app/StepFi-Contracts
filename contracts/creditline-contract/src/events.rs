@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const LATE_FEE_PAID: Symbol = symbol_short!("LATEFEEPD");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
 
@@ -161,5 +162,18 @@ pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
     env.events().publish(
         (Symbol::new(env, "CONTRACTUPGRADED"),),
         (old_version, new_version, env.ledger().timestamp()),
+    );
+}
+
+/// Emitted when a per-installment late fee is charged in `repay_installment`.
+pub fn emit_late_fee_paid(
+    env: &Env,
+    loan_id: u64,
+    installment_index: u32,
+    fee_amount: i128,
+) {
+    env.events().publish(
+        (LATE_FEE_PAID, loan_id),
+        (installment_index, fee_amount, env.ledger().timestamp()),
     );
 }

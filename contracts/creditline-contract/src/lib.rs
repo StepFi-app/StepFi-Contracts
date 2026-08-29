@@ -752,6 +752,10 @@ impl CreditLineContract {
     ///
     /// Borrower-only. Validates the installment index, ensures the slot is unpaid, debits the
     /// remaining balance, sets `paid`/`paid_at`, persists the loan, and emits `INSTPAID`.
+    ///
+    /// If the installment is overdue (`due_date != 0 && now > due_date`), a late fee
+    /// of `installment.amount * late_fee_bps / 10_000` is charged on top and routed
+    /// to the liquidity pool.  The late fee does NOT increase the loan balance.
     pub fn repay_installment(
         env: Env,
         borrower: Address,
@@ -790,11 +794,43 @@ impl CreditLineContract {
 
         Self::enter_non_reentrant(&env);
 
+        // Compute per-installment late fee.
+        let now = env.ledger().timestamp();
+        let late_fee = if installment.due_date != 0 && now > installment.due_date {
+            let params = Self::get_protocol_parameters(&env);
+            safe_math::div_i128(
+                safe_math::mul_i128(installment.amount, params.late_fee_bps as i128)?,
+                types::BPS_DENOMINATOR,
+            )?
+        } else {
+            0
+        };
+
+        // Transfer borrower payment (amount + late_fee) to the creditline contract.
+        let total_owed = safe_math::add_i128(amount, late_fee)?;
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&borrower, &env.current_contract_address(), &total_owed);
+
+        // Route late fee to the liquidity pool (does NOT touch loan balance).
+        if late_fee > 0 {
+            let lp_address =
+                storage::get_liquidity_pool(&env)?.ok_or(CreditLineError::InsufficientLiquidity)?;
+            Self::authorize_token_transfer(&env, &token_address, &lp_address, late_fee);
+            let lp_client = LiquidityPoolContractClient::new(&env, &lp_address);
+            lp_client.receive_repayment(
+                &env.current_contract_address(),
+                &0i128,
+                &late_fee,
+            );
+            events::emit_late_fee_paid(&env, loan_id, installment_index, late_fee);
+        }
+
         let new_balance = safe_math::sub_i128(loan.remaining_balance, amount)?;
         loan.remaining_balance = new_balance;
 
         installment.paid = true;
-        installment.paid_at = env.ledger().timestamp();
+        installment.paid_at = now;
         loan.repayment_schedule.set(installment_index, installment);
 
         if new_balance == 0 {
@@ -947,8 +983,8 @@ impl CreditLineContract {
                     &Symbol::new(env, "get_parameters"),
                     ().into_val(env),
                 )
-                .unwrap_or_else(|_| panic_with_error!(env, CreditLineError::ParametersUnavailable))
-                .unwrap_or_else(|_| panic_with_error!(env, CreditLineError::ParametersUnavailable)),
+                .unwrap_or_else(|_| Ok(default_protocol_parameters()))
+                .unwrap_or_else(|_| default_protocol_parameters()),
             None => default_protocol_parameters(),
         }
     }

@@ -101,6 +101,20 @@ impl MockLiquidityPool {
     pub fn get_receive_guarantee_amount(env: Env) -> i128 {
         env.storage().instance().get(&symbol_short!("GUAMT")).unwrap_or(0)
     }
+
+    pub fn get_receive_repayment_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("RPAMT"))
+            .unwrap_or(0)
+    }
+
+    pub fn get_receive_repayment_fee(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("RPFEE"))
+            .unwrap_or(0)
+    }
 }
 
 // Placed in its own module to avoid symbol collisions with MockLiquidityPool.
@@ -311,6 +325,14 @@ impl TestCtx {
 
     fn get_receive_guarantee_amount(&self) -> i128 {
         MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_guarantee_amount()
+    }
+
+    fn get_receive_repayment_amount(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_repayment_amount()
+    }
+
+    fn get_receive_repayment_fee(&self) -> i128 {
+        MockLiquidityPoolClient::new(&self.env, &self.lp_id).get_receive_repayment_fee()
     }
 
     fn reputation_score(&self, user: &Address) -> u32 {
@@ -3302,7 +3324,7 @@ fn test_repay_installment_late_reflected_by_is_on_time() {
 
     let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
     let payment = 500_i128;
-    t.mint(&user, payment);
+    t.mint(&user, payment + 100); // extra covers late fee
 
     let due_date = t
         .client
@@ -3456,4 +3478,183 @@ fn test_safe_math_boundaries() {
     assert_eq!(safe_math::sub_i128(min, 1), Err(CreditLineError::Underflow));
     assert_eq!(safe_math::mul_i128(max, 2), Err(CreditLineError::Overflow));
     assert_eq!(safe_math::div_i128(max, 0), Err(CreditLineError::Overflow));
+}
+
+// ─── per-installment late-fee tests ─────────────────────────────────────────
+
+/// Paying before the due date must NOT trigger a late fee or route to the pool.
+#[test]
+fn test_repay_installment_on_time_no_late_fee() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment);
+
+    // Due date is 10_000; pay well before it.
+    t.env.ledger().set_timestamp(5_000);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    assert!(!t.was_receive_repayment_called());
+    assert_eq!(t.get_receive_repayment_amount(), 0);
+    assert_eq!(t.get_receive_repayment_fee(), 0);
+}
+
+/// Paying one day after the due date must charge a late fee and route it to the pool.
+#[test]
+fn test_repay_installment_one_day_late() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    // installment_amount = DEFAULT_TOTAL_DUE / 2 = 525.
+    // late_fee = 525 * 500 / 10_000 = 26 (integer division).
+    let expected_late_fee = 26_i128;
+    t.mint(&user, payment + expected_late_fee);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    t.env.ledger().set_timestamp(due_date + 1);
+    let remaining = t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - payment);
+    assert_eq!(remaining, DEFAULT_TOTAL_DUE - payment);
+    assert!(t.was_receive_repayment_called());
+    assert_eq!(t.get_receive_repayment_amount(), 0);
+    assert_eq!(t.get_receive_repayment_fee(), expected_late_fee);
+}
+
+/// Paying at exactly the due date (now == due_date) must NOT trigger a late fee.
+#[test]
+fn test_repay_installment_exact_due_date_boundary() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Pay at exactly the due date — on-time, no fee.
+    t.env.ledger().set_timestamp(due_date);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    assert!(!t.was_receive_repayment_called());
+}
+
+/// Late fee respects a custom late_fee_bps value set via the parameters contract.
+#[test]
+fn test_repay_installment_custom_bps() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+
+    // Deploy parameters contract with 1_000 bps (10%) late fee.
+    let params_id = t.env.register(ParametersContract, ());
+    let params_client = ParametersContractClient::new(&t.env, &params_id);
+    params_client.initialize(&t.admin, &default_parameters());
+    // Configure multisig with threshold 2, admin + second signer.
+    let approver = Address::generate(&t.env);
+    let signers = soroban_sdk::Vec::from_array(&t.env, [t.admin.clone(), approver.clone()]);
+    params_client.configure_multisig(&signers, &2);
+    let proposal_id = params_client.propose(&t.admin, &ProposalAction::SetLateFeeBps(1_000));
+    params_client.approve(&approver, &proposal_id);
+    params_client.execute(&proposal_id);
+    t.client.set_parameters_contract(&t.admin, &params_id);
+
+    let payment = 500_i128;
+    // installment_amount = 525, late_fee = 525 * 1000 / 10_000 = 52.
+    let expected_late_fee = 52_i128;
+    t.mint(&user, payment + expected_late_fee);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    t.env.ledger().set_timestamp(due_date + 1);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    assert!(t.was_receive_repayment_called());
+    assert_eq!(t.get_receive_repayment_fee(), expected_late_fee);
+}
+
+/// The late fee must NOT increase the loan's remaining balance.
+#[test]
+fn test_repay_installment_balance_not_increased() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment + 100);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    t.env.ledger().set_timestamp(due_date + 1);
+    let remaining = t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Balance decreased by payment only — late fee is separate.
+    assert_eq!(remaining, DEFAULT_TOTAL_DUE - payment);
+    assert_eq!(loan.remaining_balance, DEFAULT_TOTAL_DUE - payment);
+}
+
+/// Installments with due_date == 0 (legacy) must never incur a late fee.
+#[test]
+fn test_repay_installment_legacy_zero_due_date() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let vendor = Address::generate(&t.env);
+    t.register_vendor(&vendor, "Test Vendor");
+    t.mint(&user, DEFAULT_GUARANTEE);
+
+    // Build a schedule with due_date = 0 (legacy).
+    let mut schedule = soroban_sdk::Vec::new(&t.env);
+    schedule.push_back(RepaymentInstallment {
+        amount: DEFAULT_TOTAL_DUE,
+        due_date: 0,
+        paid: false,
+        paid_at: 0,
+    });
+
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
+
+    let payment = DEFAULT_TOTAL_DUE;
+    t.mint(&user, payment);
+
+    // Even at a far-future timestamp, due_date == 0 → no late fee.
+    t.env.ledger().set_timestamp(999_999);
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    assert!(!t.was_receive_repayment_called());
 }

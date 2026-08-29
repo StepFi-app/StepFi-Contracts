@@ -160,6 +160,7 @@ fn test_update_parameters_two_of_three_workflow() {
         large_loan_default_penalty: 40,
         base_interest_bps: 900,
         grace_period_seconds: 86_400,
+        late_fee_bps: 1_000,
     };
 
     let id = client.propose(&s1, &ProposalAction::UpdateParameters(params.clone()));

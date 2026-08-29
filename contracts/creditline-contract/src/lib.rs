@@ -899,6 +899,8 @@ impl CreditLineContract {
 
         Self::enter_non_reentrant(&env);
 
+        let now = env.ledger().timestamp();
+
         // Payment priority: late fees → interest → service fee → principal
         let allocation = Self::apply_waterfall(&mut loan, amount)?;
 

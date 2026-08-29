@@ -4119,6 +4119,7 @@ impl MockParametersContract {
             base_interest_bps: 0,
             grace_period_seconds: 0,
             upgrade_delay_seconds: 172_800, // 2 days
+            late_fee_bps: 500,
         }
     }
 }

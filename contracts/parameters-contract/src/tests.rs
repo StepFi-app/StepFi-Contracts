@@ -161,6 +161,7 @@ fn test_update_parameters_two_of_three_workflow() {
         base_interest_bps: 900,
         grace_period_seconds: 86_400,
         upgrade_delay_seconds: 86_400,
+        late_fee_bps: 500,
     };
 
     let id = client.propose(&s1, &ProposalAction::UpdateParameters(params.clone()));

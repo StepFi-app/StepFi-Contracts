@@ -16,6 +16,8 @@ pub struct ProtocolParameters {
     pub grace_period_seconds: u64,
     /// Mandatory delay in seconds required between propose_upgrade and execute_upgrade.
     pub upgrade_delay_seconds: u64,
+    /// Basis-point fee (out of 10 000) charged per overdue installment at repayment time.
+    pub late_fee_bps: u32,
 }
 
 pub const DEFAULT_MIN_GUARANTEE_PERCENT: i128 = 20;
@@ -30,6 +32,8 @@ pub const DEFAULT_BASE_INTEREST_BPS: u32 = 0;
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 0;
 /// Default upgrade delay: 1 day (86,400 seconds).
 pub const DEFAULT_UPGRADE_DELAY_SECONDS: u64 = 86_400;
+/// Default late fee: 500 bps = 5 % of the installment amount.
+pub const DEFAULT_LATE_FEE_BPS: u32 = 500;
 
 pub fn default_parameters() -> ProtocolParameters {
     ProtocolParameters {
@@ -42,6 +46,7 @@ pub fn default_parameters() -> ProtocolParameters {
         base_interest_bps: DEFAULT_BASE_INTEREST_BPS,
         grace_period_seconds: DEFAULT_GRACE_PERIOD_SECONDS,
         upgrade_delay_seconds: DEFAULT_UPGRADE_DELAY_SECONDS,
+        late_fee_bps: DEFAULT_LATE_FEE_BPS,
     }
 }
 
@@ -59,6 +64,7 @@ pub enum ProposalAction {
     SetAdmin(Address),
     Upgrade(BytesN<32>),
     UpdateSigners(MultisigConfig),
+    SetLateFeeBps(u32),
 }
 
 #[contracttype]

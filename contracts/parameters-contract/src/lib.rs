@@ -188,6 +188,7 @@ impl ParametersContract {
             ProposalAction::SetAdmin(a) => Self::do_set_admin(&env, &a),
             ProposalAction::Upgrade(h) => Self::do_upgrade(&env, h),
             ProposalAction::UpdateSigners(c) => Self::do_update_signers(&env, &c, proposal.id),
+            ProposalAction::SetLateFeeBps(b) => Self::do_set_late_fee_bps(&env, b),
         }
 
         proposal.executed = true;
@@ -290,6 +291,14 @@ impl ParametersContract {
             }
             _ => config.threshold,
         }
+    }
+
+    fn do_set_late_fee_bps(env: &Env, bps: u32) {
+        let mut params = storage::get_parameters(env).unwrap_or_else(|err| panic_with_error!(env, err));
+        params.late_fee_bps = bps;
+        let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));
+        storage::set_parameters(env, &params);
+        events::emit_parameters_updated(env, &admin, &params);
     }
 
     fn validate_parameters(env: &Env, params: &ProtocolParameters) {

@@ -968,13 +968,15 @@ impl CreditLineContract {
 
         Self::enter_non_reentrant(&env);
 
+        let now = env.ledger().timestamp();
+
         // Payment priority: late fees → interest → service fee → principal
         let allocation = Self::apply_waterfall(&mut loan, amount)?;
 
         let new_balance = loan.remaining_balance;
 
         installment.paid = true;
-        installment.paid_at = env.ledger().timestamp();
+        installment.paid_at = now;
         loan.repayment_schedule.set(installment_index, installment);
 
         let is_fully_repaid = new_balance == 0;
@@ -1014,6 +1016,10 @@ impl CreditLineContract {
         }
 
         events::emit_installment_paid(&env, loan_id, installment_index, amount, new_balance);
+
+        if allocation.late_fee_paid > 0 {
+            events::emit_late_fee_paid(&env, loan_id, installment_index, allocation.late_fee_paid);
+        }
 
         if is_fully_repaid {
             if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
@@ -1189,8 +1195,8 @@ impl CreditLineContract {
                     &Symbol::new(env, "get_parameters"),
                     ().into_val(env),
                 )
-                .unwrap_or_else(|_| panic_with_error!(env, CreditLineError::ParametersUnavailable))
-                .unwrap_or_else(|_| panic_with_error!(env, CreditLineError::ParametersUnavailable)),
+                .unwrap_or_else(|_| Ok(default_protocol_parameters()))
+                .unwrap_or_else(|_| default_protocol_parameters()),
             None => default_protocol_parameters(),
         }
     }

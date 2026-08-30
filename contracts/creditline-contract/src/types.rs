@@ -12,6 +12,7 @@ pub struct ProtocolParameters {
     pub base_interest_bps: u32,
     pub grace_period_seconds: u64,
     pub upgrade_delay_seconds: u64,
+    pub late_fee_bps: u32,
 }
 
 // Loan status enum
@@ -85,6 +86,7 @@ pub fn default_protocol_parameters() -> ProtocolParameters {
         base_interest_bps: 0,
         grace_period_seconds: 0,
         upgrade_delay_seconds: 86_400,
+        late_fee_bps: 500,
     }
 }
 

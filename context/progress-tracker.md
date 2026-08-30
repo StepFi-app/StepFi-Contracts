@@ -10,7 +10,7 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Current Goal
 
-`LoanType` and per-installment tracking are in. Next: per-loan grace period (Next Up #4), then vouching contract.
+`LoanType` and per-installment tracking are in. Per-installment late fees implemented. Next: vouching contract or other Phase 1 items.
 
 ---
 
@@ -132,6 +132,24 @@ Update this file after every completed contract change, fix, or architectural de
 - `test_repay_installment_non_borrower_rejected`: asserts `UnauthorizedRepayer` (#14) when caller is not the borrower
 - `test_repay_installment_zero_amount_rejected`: asserts `InvalidRepaymentAmount` (#13) for zero payment
 - Total tests: 98 (93 existing + 5 new) — all passing
+
+### Per-Installment Late Fee (creditline-contract + parameters-contract)
+- Added `late_fee_bps: u32` to `ProtocolParameters` in both `parameters-contract` and `creditline-contract` (local copy) with default 500 (5%)
+- Added `SetLateFeeBps(u32)` variant to `ProposalAction` in `parameters-contract` with governance execution path
+- Added `LATEFEEPD` event and `emit_late_fee_paid()` in `events.rs`
+- `repay_installment()` now computes per-installment late fee when `due_date != 0 && now > due_date`: `installment.amount * late_fee_bps / 10_000`
+- Late fee is charged ON TOP of the repayment amount — borrower pays `amount + late_fee`
+- Late fee does NOT increase `loan.remaining_balance` — it routes to the liquidity pool via `receive_repayment(creditline, 0, late_fee)`
+- Token transfer added to `repay_installment`: `token_client.transfer(borrower, creditline, total_owed)` + `authorize_token_transfer` for pool routing
+- Conditional pool routing: only calls `receive_repayment` when `late_fee > 0` (pool requires `total > 0`)
+- `due_date == 0` is treated as on-time for per-installment fees (legacy installments never incur per-installment late fees)
+- Existing `accrue_late_fees_internal` (day-based system) left unchanged — both systems coexist
+- `get_protocol_parameters()` now falls back to `default_protocol_parameters()` on cross-contract failure (graceful degradation)
+- MockLiquidityPool: added `get_receive_repayment_amount()` and `get_receive_repayment_fee()` getters; TestCtx wrappers added
+- Fixed existing test `test_repay_installment_late_reflected_by_is_on_time` to mint extra tokens for late fee
+- 6 new tests: on-time no fee, one-day late, exact due-date boundary, custom bps via governance, balance not increased, legacy zero-due-date
+- Total creditline tests: 119 (113 original + 6 new) — all passing
+- Build: `cargo build` zero errors; 2 pre-existing liquidity-pool test failures unrelated to this change
 
 ### Issue #6 — Typed Storage Errors
 - Removed all `.expect(...)` and bare `.unwrap()` matches from `contracts/*/src/storage.rs`

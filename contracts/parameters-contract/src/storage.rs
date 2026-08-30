@@ -1,4 +1,4 @@
-use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Symbol};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Symbol, Vec};
 
 use crate::errors::ParametersError;
 use crate::types::{DataKey, MultisigConfig, Proposal, ProtocolParameters};
@@ -8,6 +8,8 @@ pub const PARAMS_KEY: Symbol = symbol_short!("PARAMS");
 pub const REENTRANCY_LOCK: Symbol = symbol_short!("LOCKED");
 pub const VERSION_KEY: Symbol = symbol_short!("VERSION");
 pub const MULTISIG_KEY: Symbol = symbol_short!("MSIG");
+pub const PENDING_MULTISIG_KEY: Symbol = symbol_short!("PMSCFG");
+pub const ACTIVE_PROPOSALS_KEY: Symbol = symbol_short!("PROPIDS");
 pub const PROP_CNT_KEY: Symbol = symbol_short!("PROPCNT");
 
 // TTL constants (in ledgers — 1 ledger ≈ 5 seconds on mainnet)
@@ -73,6 +75,43 @@ pub fn get_multisig(env: &Env) -> Result<MultisigConfig, ParametersError> {
 
 pub fn set_multisig(env: &Env, config: &MultisigConfig) {
     env.storage().instance().set(&MULTISIG_KEY, config);
+}
+
+/// Pending (proposed-but-not-confirmed) multisig config for the two-step
+/// `configure_multisig` → `confirm_multisig` flow. Instance storage.
+pub fn has_pending_multisig(env: &Env) -> bool {
+    env.storage().instance().has(&PENDING_MULTISIG_KEY)
+}
+
+pub fn get_pending_multisig(env: &Env) -> Result<MultisigConfig, ParametersError> {
+    env.storage()
+        .instance()
+        .get(&PENDING_MULTISIG_KEY)
+        .ok_or(ParametersError::MultisigNotConfigured)
+}
+
+pub fn set_pending_multisig(env: &Env, config: &MultisigConfig) {
+    env.storage().instance().set(&PENDING_MULTISIG_KEY, config);
+}
+
+pub fn clear_pending_multisig(env: &Env) {
+    env.storage().instance().remove(&PENDING_MULTISIG_KEY);
+}
+
+/// Index of every proposal ever created (by id). Used to sweep and invalidate
+/// in-flight signer-set proposals when the signer set changes. Instance
+/// storage — proposals themselves are persistent.
+pub fn get_active_proposals(env: &Env) -> Vec<u64> {
+    env.storage()
+        .instance()
+        .get(&ACTIVE_PROPOSALS_KEY)
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn add_active_proposal(env: &Env, id: u64) {
+    let mut ids = get_active_proposals(env);
+    ids.push_back(id);
+    env.storage().instance().set(&ACTIVE_PROPOSALS_KEY, &ids);
 }
 
 pub fn next_proposal_id(env: &Env) -> u64 {

@@ -68,9 +68,18 @@ pub struct Proposal {
     pub action: ProposalAction,
     pub proposer: Address,
     pub approvals: Vec<Address>,
+    /// The signer set captured at proposal time. Every stored approval must be
+    /// a member of this snapshot AND of the current signer set at approve() and
+    /// execute() time, so signers removed (or added) since the proposal was
+    /// created can never lend it stale or illegitimate approval power.
+    pub snapshot: Vec<Address>,
     pub created_at: u64,
     pub expires_at: u64,
     pub executed: bool,
+    /// Set to true when an in-flight signer-set proposal is voided because the
+    /// signer set changed before it could execute. Invalidated proposals can
+    /// neither collect new approvals nor be executed.
+    pub invalidated: bool,
 }
 
 #[contracttype]

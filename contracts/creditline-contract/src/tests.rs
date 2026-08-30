@@ -2705,6 +2705,7 @@ fn test_parameters_contract_controls_guarantee_thresholds() {
         &soroban_sdk::vec![&t.env, signer_a.clone(), signer_b.clone()],
         &2u32,
     );
+    t.parameters.confirm_multisig();
     let proposal_id = t
         .parameters
         .propose(&signer_a, &ProposalAction::UpdateParameters(params));

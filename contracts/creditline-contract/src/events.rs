@@ -11,6 +11,7 @@ const LOAN_CANCELLED: Symbol = symbol_short!("LOANCNCL");
 const LOAN_LATE_FEE: Symbol = symbol_short!("LOANLTFE");
 const LOAN_GRACE_PERIOD: Symbol = symbol_short!("LOANGRC");
 const INSTALLMENT_PAID: Symbol = symbol_short!("INSTPAID");
+const LATE_FEE_PAID: Symbol = symbol_short!("LATEFEEPD");
 const LOAN_FUNDED: Symbol = symbol_short!("LOANFNDD");
 
 pub const LOANAPPROVED: &str = "LOANAPPROVED";
@@ -173,6 +174,23 @@ pub fn emit_loan_in_grace_period(
         (
             remaining_balance,
             grace_period_ends_at,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+/// Emitted when a late fee is collected as part of `repay_installment`.
+pub fn emit_late_fee_paid(
+    env: &Env,
+    loan_id: u64,
+    installment_index: u32,
+    fee_amount: i128,
+) {
+    env.events().publish(
+        (LATE_FEE_PAID, loan_id),
+        (
+            installment_index,
+            fee_amount,
             env.ledger().timestamp(),
         ),
     );

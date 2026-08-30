@@ -948,6 +948,10 @@ impl CreditLineContract {
 
         events::emit_installment_paid(&env, loan_id, installment_index, amount, new_balance);
 
+        if allocation.late_fee_paid > 0 {
+            events::emit_late_fee_paid(&env, loan_id, installment_index, allocation.late_fee_paid);
+        }
+
         if is_fully_repaid {
             if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
                 let updater = env.current_contract_address();

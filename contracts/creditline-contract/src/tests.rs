@@ -13,7 +13,7 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::Client as TokenClient,
-    Address, Env, String as SorobanString, Symbol,
+    Address, Env, IntoVal, String as SorobanString, Symbol,
 };
 use vendor_registry_contract::VendorRegistryContract;
 
@@ -3553,6 +3553,174 @@ fn test_repay_installment_late_reflected_by_is_on_time() {
         .get(0)
         .unwrap();
     assert!(!installment.is_on_time());
+}
+
+#[test]
+fn test_repay_installment_no_late_fee_before_due() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+    t.mint(&user, payment);
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Pay before the due date — no late fee expected.
+    t.env.ledger().set_timestamp(due_date - 1);
+    let remaining = t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    assert_eq!(loan.late_fees_outstanding, 0);
+    // remaining_balance should decrease by exactly the payment, no extra fee.
+    assert_eq!(remaining, DEFAULT_TOTAL_DUE - payment);
+    assert_eq!(
+        t.client.get_loan(&loan_id).remaining_balance,
+        DEFAULT_TOTAL_DUE - payment
+    );
+}
+
+#[test]
+fn test_repay_installment_late_fee_accrued_and_deducted() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Advance 1 full day past due — triggers accrual of daily late fee.
+    t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
+
+    // Mint enough to cover payment + accrued late fee.
+    // Fee = remaining_balance(1050) * 50 bps/day * 1 day / 10_000 = 5
+    t.mint(&user, payment + 10);
+
+    let remaining = t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Late fee was accrued (added to remaining_balance) then paid via waterfall.
+    // After accrual: remaining_balance = 1050 + 5 = 1055, late_fees_outstanding = 5.
+    // After payment of 500: waterfall pays late_fee(5) first, then principal.
+    // remaining_balance = 1055 - 500 = 555, late_fees_outstanding = 0.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    assert_eq!(remaining, 555);
+}
+
+#[test]
+fn test_repay_installment_late_fee_routed_to_pool() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Advance 1 full day past due.
+    t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
+    t.mint(&user, payment + 10);
+
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    // Verify the mock pool received the repayment.
+    // The fee argument = interest_paid + service_fee_paid + late_fee_paid.
+    // With 500 payment and 5 accrued late fee:
+    //   late_fee_paid=5, interest_paid=40, service_fee_paid=10 → total fee arg = 55.
+    let lp_client = MockLiquidityPoolClient::new(&t.env, &t.lp_id);
+    assert!(lp_client.was_receive_repayment_called());
+    assert_eq!(lp_client.get_receive_repayment_fee(), 55);
+}
+
+#[test]
+fn test_repay_installment_late_fee_event_emitted() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Advance 1 full day past due.
+    t.env.ledger().set_timestamp(due_date + SECONDS_PER_DAY);
+    t.mint(&user, payment + 10);
+
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    // Verify LATEFEEPD event was emitted.
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
+    let mut found = false;
+    for event in events.iter() {
+        let topics = event.1.clone();
+        let topic: Symbol = topics.get_unchecked(0).into_val(&t.env);
+        if topic == Symbol::new(&t.env, "LATEFEEPD") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "LATEFEEPD event must be emitted");
+}
+
+#[test]
+fn test_repay_installment_late_fee_does_not_increase_balance() {
+    let t = TestCtx::setup();
+    let user = Address::generate(&t.env);
+
+    let (loan_id, _vendor) = setup_loan_with_schedule(&t, &user, 2);
+    let payment = 500_i128;
+
+    let due_date = t
+        .client
+        .get_loan(&loan_id)
+        .repayment_schedule
+        .get(0)
+        .unwrap()
+        .due_date;
+
+    // Advance 2 full days past due.
+    t.env.ledger().set_timestamp(due_date + 2 * SECONDS_PER_DAY);
+    t.mint(&user, payment + 20);
+
+    t.client.repay_installment(&user, &loan_id, &0, &payment);
+
+    let loan = t.client.get_loan(&loan_id);
+    // Late fees were accrued then fully paid via waterfall.
+    // The late fee should NOT remain in late_fees_outstanding.
+    assert_eq!(loan.late_fees_outstanding, 0);
+    // remaining_balance should be (original + accrued_fee - payment)
+    // accrued = 1050 * 50 * 2 / 10000 = 10
+    // remaining = (1050 + 10) - 500 = 560
+    assert_eq!(loan.remaining_balance, 560);
 }
 
 // ─── repay_installment tests ──────────────────────────────────────────────────

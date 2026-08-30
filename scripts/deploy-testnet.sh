@@ -119,7 +119,25 @@ stellar contract invoke --id $LIQUIDITY_POOL_ID --source $SOURCE --network $NETW
   --token $TOKEN_ID \
   --treasury $TREASURY \
   --admin $ADMIN_PUBKEY \
-  --merchant_fund $MERCHANT_FUND 2>&1 | tail -1
+  --merchant_fund $MERCHANT_FUND \
+  --vendor_registry $VENDOR_REGISTRY_ID 2>&1 | tail -1
+
+# Defense-in-depth caps (issue #106) — opt-in via env vars.
+# OUTFLOW_CAP_BPS: cumulative fund_loan outflows per ledger, as bps of available
+#   liquidity. 0 = disabled, 10_000 = 100%. 5_000 chokes a draining creditline
+#   to at most 50% of available liquidity per ledger.
+# MERCHANT_EXPOSURE_CAP: cumulative funding ceiling per merchant (token units).
+#   0 = disabled.
+if [ -n "${OUTFLOW_CAP_BPS:-}" ] && [ "${OUTFLOW_CAP_BPS:-0}" -gt 0 ]; then
+  echo "Setting outflow cap to ${OUTFLOW_CAP_BPS} bps..."
+  stellar contract invoke --id $LIQUIDITY_POOL_ID --source $SOURCE --network $NETWORK \
+    -- set_outflow_cap_bps --admin $ADMIN_PUBKEY --bps $OUTFLOW_CAP_BPS 2>&1 | tail -1
+fi
+if [ -n "${MERCHANT_EXPOSURE_CAP:-}" ] && [ "${MERCHANT_EXPOSURE_CAP:-0}" -gt 0 ]; then
+  echo "Setting merchant exposure cap to ${MERCHANT_EXPOSURE_CAP} units..."
+  stellar contract invoke --id $LIQUIDITY_POOL_ID --source $SOURCE --network $NETWORK \
+    -- set_merchant_exposure_cap --admin $ADMIN_PUBKEY --amount $MERCHANT_EXPOSURE_CAP 2>&1 | tail -1
+fi
 
 # vouch_boost=10: DEFAULT_VOUCH_BOOST from vouching-contract types.rs.
 # On the 0-100 reputation scale, 10 points is a significant single-mentor
@@ -191,7 +209,7 @@ cat > contracts/deployed-testnet.json << JSONEOF
       "id": "$LIQUIDITY_POOL_ID",
       "initialized": true,
       "initializedAt": "$TODAY",
-      "initMethod": "initialize(token, treasury, admin, merchant_fund)"
+      "initMethod": "initialize(token, treasury, admin, merchant_fund, vendor_registry)"
     },
     "vouching": {
       "id": "$VOUCHING_ID",

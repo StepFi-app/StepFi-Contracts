@@ -25,9 +25,26 @@ pub fn emit_liquidity_withdrawn(
         .publish((WITHDRAWN, provider), (shares_burned, amount_returned));
 }
 
-/// Emitted when the pool funds a loan (CreditLine → merchant)
-pub fn emit_loan_funded(env: &Env, creditline: &Address, amount: i128) {
-    env.events().publish((LOAN_FUNDED, creditline), amount);
+/// Emitted when the pool funds a loan (CreditLine → merchant).
+/// Payload carries the recipient, the funded amount, and the remaining
+/// per-ledger outflow and per-merchant exposure caps for indexer monitoring.
+pub fn emit_loan_funded(
+    env: &Env,
+    creditline: &Address,
+    merchant: &Address,
+    amount: i128,
+    outflow_remaining: i128,
+    merchant_remaining: i128,
+) {
+    env.events().publish(
+        (LOAN_FUNDED, creditline),
+        (
+            merchant.clone(),
+            amount,
+            outflow_remaining,
+            merchant_remaining,
+        ),
+    );
 }
 
 /// Emitted when principal + interest repayment is received from CreditLine
@@ -91,4 +108,20 @@ pub fn emit_unpaused(env: &Env, admin: &Address) {
         (symbol_short!("UNPAUSED"), admin),
         env.ledger().timestamp(),
     );
+}
+
+const CAPS_UPDATED: Symbol = symbol_short!("CAPSUPD");
+const VREG_UPDATED: Symbol = symbol_short!("VREGUPD");
+
+/// Emitted whenever the admin changes the outflow or exposure caps.
+/// Carries the new `(outflow_cap_bps, exposure_cap)` for indexers.
+pub fn emit_caps_updated(env: &Env, admin: &Address, outflow_cap_bps: u32, exposure_cap: i128) {
+    env.events()
+        .publish((CAPS_UPDATED, admin), (outflow_cap_bps, exposure_cap));
+}
+
+/// Emitted whenever the admin sets or clears the vendor-registry address.
+pub fn emit_vendor_registry_updated(env: &Env, admin: &Address, registry: &Option<Address>) {
+    env.events()
+        .publish((VREG_UPDATED, admin), (registry.clone(),));
 }

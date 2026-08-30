@@ -21,16 +21,21 @@ impl LiquidityPoolContract {
 
     /// Initialize the contract. Can only be called once.
     ///
-    /// * `admin`        ΓÇô Contract administrator (can update addresses)
-    /// * `token`        ΓÇô SEP-41 token used by the pool (e.g. USDC)
-    /// * `treasury`     ΓÇô Address that receives the 10% protocol fee
-    /// * `merchant_fund`ΓÇô Address that receives the 5% merchant incentive fee
+    /// * `admin`          ΓÇô Contract administrator (can update addresses/caps)
+    /// * `token`          ΓÇô SEP-41 token used by the pool (e.g. USDC)
+    /// * `treasury`       ΓÇô Address that receives the 10% protocol fee
+    /// * `merchant_fund`  ΓÇô Address that receives the 5% merchant incentive fee
+    /// * `vendor_registry`ΓÇô Optional registered vendor-registry contract. When
+    ///   set, `fund_loan` requires the recipient merchant to be an active
+    ///   (approved) vendor before transferring. When `None`, the check is
+    ///   skipped (backward compatible).
     pub fn initialize(
         env: Env,
         admin: Address,
         token: Address,
         treasury: Address,
         merchant_fund: Address,
+        vendor_registry: Option<Address>,
     ) {
         if storage::has_admin(&env) {
             panic_with_error!(&env, LiquidityPoolError::AlreadyInitialized);
@@ -41,6 +46,7 @@ impl LiquidityPoolContract {
         storage::set_token(&env, &token);
         storage::set_treasury(&env, &treasury);
         storage::set_merchant_fund(&env, &merchant_fund);
+        storage::set_vendor_registry(&env, &vendor_registry);
     }
 
     // -------------------------------------------------------------------------
@@ -51,6 +57,41 @@ impl LiquidityPoolContract {
         admin.require_auth();
         Self::require_admin(&env, &admin);
         storage::set_creditline(&env, &creditline);
+    }
+
+    /// Configure the per-ledger outflow cap (basis points of available liquidity).
+    /// `0` = cap disabled (only the available-liquidity check applies);
+    /// `1..=10_000` caps cumulative `fund_loan` outflows within a single ledger
+    /// to that fraction of available liquidity. Admin only.
+    pub fn set_outflow_cap_bps(env: Env, admin: Address, bps: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if bps > 10_000 {
+            panic_with_error!(&env, LiquidityPoolError::InvalidCap);
+        }
+        storage::set_outflow_cap_bps(&env, bps);
+        events::emit_caps_updated(&env, &admin, bps, storage::get_merchant_exposure_cap(&env));
+    }
+
+    /// Configure the cumulative single-recipient exposure ceiling (token units).
+    /// `0` = cap disabled. Admin only.
+    pub fn set_merchant_exposure_cap(env: Env, admin: Address, amount: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if amount < 0 {
+            panic_with_error!(&env, LiquidityPoolError::InvalidCap);
+        }
+        storage::set_merchant_exposure_cap(&env, amount);
+        events::emit_caps_updated(&env, &admin, storage::get_outflow_cap_bps(&env), amount);
+    }
+
+    /// Set or clear (`None`) the vendor-registry contract used to cross-check
+    /// recipients before funding. Admin only.
+    pub fn set_vendor_registry(env: Env, admin: Address, registry: Option<Address>) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        storage::set_vendor_registry(&env, &registry);
+        events::emit_vendor_registry_updated(&env, &admin, &registry);
     }
 
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
@@ -311,6 +352,17 @@ impl LiquidityPoolContract {
 
     /// Transfer `amount` tokens to `merchant` to fund a loan.
     /// Only the registered CreditLine contract may call this.
+    ///
+    /// Defense-in-depth guards (layered on top of the existing
+    /// `require_creditline` restriction, which is kept):
+    ///
+    /// 1. Optional vendor cross-check: if a vendor registry is configured,
+    ///    `merchant` must be an active (approved) vendor.
+    /// 2. Per-ledger outflow cap: cumulative `fund_loan` outflows within the
+    ///    current ledger are bounded to a configurable fraction of available
+    ///    liquidity. The window rolls automatically on ledger change.
+    /// 3. Single-recipient concentration cap: cumulative funding to a single
+    ///    merchant is bounded by a configurable ceiling.
     pub fn fund_loan(
         env: Env,
         creditline: Address,
@@ -325,6 +377,15 @@ impl LiquidityPoolContract {
             return Err(LiquidityPoolError::InvalidAmount);
         }
 
+        // Optional vendor cross-check (skipped entirely when no registry set).
+        if let Some(registry) = storage::get_vendor_registry(&env)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+        {
+            if !Self::vendor_is_active(&env, &registry, &merchant) {
+                return Err(LiquidityPoolError::VendorNotActive);
+            }
+        }
+
         Self::enter_non_reentrant(&env);
 
         let total_liquidity =
@@ -337,6 +398,45 @@ impl LiquidityPoolContract {
             return Err(LiquidityPoolError::InsufficientLiquidity);
         }
 
+        // Per-ledger outflow cap with rolling window reset. Disabled when the
+        // configured cap is zero. The window is keyed to the current ledger
+        // sequence: entering a new ledger resets the used counter.
+        let mut outflow_remaining = 0_i128;
+        let outflow_cap_bps = storage::get_outflow_cap_bps(&env);
+        if outflow_cap_bps > 0 {
+            let outflow_cap = safe_math::div_i128(
+                safe_math::mul_i128(available, outflow_cap_bps as i128)?,
+                types::TOTAL_BPS,
+            )?;
+            let current_seq = env.ledger().sequence();
+            let (window_seq, mut used) = storage::get_outflow_window(&env);
+            if window_seq != current_seq {
+                used = 0;
+            }
+            let new_used = safe_math::add_i128(used, amount)?;
+            if new_used > outflow_cap {
+                return Err(LiquidityPoolError::OutflowCapExceeded);
+            }
+            storage::set_outflow_window(&env, current_seq, new_used);
+            outflow_remaining = safe_math::sub_i128(outflow_cap, new_used)?;
+        }
+
+        // Single-recipient concentration cap (cumulative, never reset).
+        // Disabled when the configured ceiling is zero. Cumulative exposure is
+        // tracked regardless so admins can monitor it via `get_merchant_funded`.
+        let mut merchant_remaining = 0_i128;
+        let exposure_cap = storage::get_merchant_exposure_cap(&env);
+        let funded_so_far = storage::get_merchant_funded(&env, &merchant)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let new_funded = safe_math::add_i128(funded_so_far, amount)?;
+        if exposure_cap > 0 {
+            if new_funded > exposure_cap {
+                return Err(LiquidityPoolError::MerchantExposureCapExceeded);
+            }
+            merchant_remaining = safe_math::sub_i128(exposure_cap, new_funded)?;
+        }
+        storage::set_merchant_funded(&env, &merchant, new_funded);
+
         let new_locked = safe_math::add_i128(locked_liquidity, amount)?;
         storage::set_locked_liquidity(&env, new_locked);
 
@@ -345,7 +445,14 @@ impl LiquidityPoolContract {
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &merchant, &amount);
 
-        events::emit_loan_funded(&env, &creditline, amount);
+        events::emit_loan_funded(
+            &env,
+            &creditline,
+            &merchant,
+            amount,
+            outflow_remaining,
+            merchant_remaining,
+        );
         Self::exit_non_reentrant(&env);
         Ok(())
     }
@@ -657,6 +764,28 @@ impl LiquidityPoolContract {
         storage::get_lp_shares(&env, &provider).unwrap_or_else(|err| panic_with_error!(&env, err))
     }
 
+    /// Return the configured per-ledger outflow cap (basis points of available
+    /// liquidity; 10000 = 100%).
+    pub fn get_outflow_cap_bps(env: Env) -> u32 {
+        storage::get_outflow_cap_bps(&env)
+    }
+
+    /// Return the configured cumulative single-recipient exposure ceiling.
+    pub fn get_merchant_exposure_cap(env: Env) -> i128 {
+        storage::get_merchant_exposure_cap(&env)
+    }
+
+    /// Return the optional vendor-registry contract used for recipient checks.
+    pub fn get_vendor_registry(env: Env) -> Option<Address> {
+        storage::get_vendor_registry(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
+    }
+
+    /// Return the cumulative amount funded to a single merchant.
+    pub fn get_merchant_funded(env: Env, merchant: Address) -> i128 {
+        storage::get_merchant_funded(&env, &merchant)
+            .unwrap_or_else(|err| panic_with_error!(&env, err))
+    }
+
     /// Calculate how many tokens `shares` are worth at the current share price.
     pub fn calculate_withdrawal(env: Env, shares: i128) -> i128 {
         if shares == 0 {
@@ -715,6 +844,23 @@ impl LiquidityPoolContract {
         let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));
         if admin != *caller {
             panic_with_error!(env, LiquidityPoolError::NotAdmin);
+        }
+    }
+
+    /// Cross-check a recipient against the configured vendor registry's
+    /// `is_active(merchant)`. Any invocation failure resolves to `false`
+    /// (fail-closed): a broken, suspended, or uninitialized registry blocks
+    /// funding rather than allowing unvalidated payouts.
+    fn vendor_is_active(env: &Env, registry: &Address, merchant: &Address) -> bool {
+        use soroban_sdk::IntoVal;
+        if let Ok(Ok(active)) = env.try_invoke_contract::<bool, soroban_sdk::Error>(
+            registry,
+            &soroban_sdk::Symbol::new(env, "is_active"),
+            (merchant.clone(),).into_val(env),
+        ) {
+            active
+        } else {
+            false
         }
     }
 

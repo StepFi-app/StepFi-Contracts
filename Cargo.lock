@@ -814,6 +814,7 @@ name = "liquidity-pool-contract"
 version = "1.0.0"
 dependencies = [
  "soroban-sdk",
+ "vendor-registry-contract",
 ]
 
 [[package]]

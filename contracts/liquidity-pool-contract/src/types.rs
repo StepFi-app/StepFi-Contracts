@@ -21,6 +21,20 @@ pub const TOTAL_BPS: i128 = 10000;
 /// Precision used for share price calculation (10000 = 1.0)
 pub const SHARE_PRICE_PRECISION: i128 = 10_000;
 
+/// Default per-ledger outflow cap in basis points of available liquidity.
+/// `0` means the cap is **disabled** — `fund_loan` is bounded only by the
+/// available-liquidity check (legacy behavior). Admins enable a bound via
+/// `set_outflow_cap_bps` (1..=10_000, e.g. 5_000 = 50% of available liquidity
+/// per ledger) so a misbehaving creditline cannot drain the pool faster than
+/// the operator tolerates.
+pub const DEFAULT_OUTFLOW_CAP_BPS: u32 = 0;
+
+/// Default cumulative single-recipient (vendor) exposure ceiling in token
+/// units. `0` means the cap is **disabled**. Admins enable a bound via
+/// `set_merchant_exposure_cap` so cumulative funding to any one merchant is
+/// capped.
+pub const DEFAULT_MERCHANT_EXPOSURE_CAP: i128 = 0;
+
 /// Minimum deposit / withdrawal amount to prevent dust attacks and rounding exploits.
 /// On first deposit this also determines the number of dead (unclaimable) shares
 /// seeded into the pool so a single dust depositor cannot own 100 % of the pool.

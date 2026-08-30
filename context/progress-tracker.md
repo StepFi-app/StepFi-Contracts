@@ -16,6 +16,19 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Issue #106 — LP `fund_loan` Recipient Validation & Drain Caps
+- **Problem:** `fund_loan()` performed no recipient cross-check once the creditline auth passed (any address was payable) and had no caps on how much liquidity a misbehaving creditline could drain per ledger or concentrate on a single merchant.
+- **Fix (`liquidity-pool-contract`):**
+  - **Optional vendor cross-check:** `initialize()` now accepts an optional `vendor_registry` address. When set, `fund_loan` requires the recipient to be an active (approved) vendor via the registry's `is_active()`; the check is fail-closed (any invocation error blocks funding) and fully skipped when no registry is configured (legacy behavior preserved). Configurable post-init via admin-only `set_vendor_registry` (`None` clears it).
+  - **Per-ledger outflow cap:** admin-only `set_outflow_cap_bps` caps cumulative `fund_loan` outflows within a single ledger to N basis points of available liquidity (`0` = disabled, `1..=10_000`). The window is a rolling `(ledger_sequence, used)` pair — entering a new ledger sequence resets the used counter automatically.
+  - **Single-recipient exposure cap:** admin-only `set_merchant_exposure_cap` caps cumulative funding per merchant (`0` = disabled). Cumulative exposure is tracked in persistent storage (with TTL extension) regardless of whether the cap is enabled, so admins can monitor via `get_merchant_funded` before enabling a bound.
+  - New errors: `OutflowCapExceeded` (#16), `MerchantExposureCapExceeded` (#17), `VendorNotActive` (#18), `InvalidCap` (#19).
+  - `LOAN_FUNDED` event now carries `(merchant, amount, outflow_remaining, merchant_remaining)`; new `CAPSUPD` and `VREGUPD` events on cap/registry changes for indexer monitoring.
+  - New queries: `get_outflow_cap_bps`, `get_merchant_exposure_cap`, `get_vendor_registry`, `get_merchant_funded`.
+  - Added 16 unit tests: default-disabled backward compatibility, invalid/unauthorized cap setters, within-ledger cap enforcement + rolling window reset, per-recipient exposure independence, exposure accounting with caps disabled, unregistered/suspended/approved merchant flows, clearing the registry restores legacy behavior, and event payload assertion.
+  - Updated creditline integration tests for the new `initialize` signature and `scripts/deploy-testnet.sh` (passes `--vendor_registry`, plus opt-in `OUTFLOW_CAP_BPS` / `MERCHANT_EXPOSURE_CAP` env-gated caps).
+- **Tests:** `cargo test --locked` → 401 passing (125 liquidity-pool, 143 creditline, 20 parameters, 60 reputation, 26 vendor-registry, 27 vouching).
+
 ### Security: Close Unauthenticated Admin-Claim Branch in Reputation `set_admin()`
 - **Problem:** `set_admin()` in `contracts/reputation-contract/src/lib.rs` contained an unauthenticated fallback branch when no admin was stored, allowing anyone to claim admin of the reputation contract without authorization.
 - **Fix (`reputation-contract`):**

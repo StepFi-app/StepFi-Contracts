@@ -19,4 +19,8 @@ pub enum LiquidityPoolError {
     UpgradeTimelockNotMet = 13,
     UpgradeHashMismatch = 14,
     ContractPaused = 15,
+    OutflowCapExceeded = 16,
+    MerchantExposureCapExceeded = 17,
+    VendorNotActive = 18,
+    InvalidCap = 19,
 }

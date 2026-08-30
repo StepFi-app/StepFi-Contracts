@@ -80,6 +80,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env);
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         Self::validate_vendor(&env, &vendor)?;
@@ -132,6 +133,7 @@ impl CreditLineContract {
         loan_type: LoanType,
     ) -> Result<u64, CreditLineError> {
         user.require_auth();
+        Self::require_not_paused(&env);
 
         Self::validate_guarantee(&env, total_amount, guarantee_amount)?;
         let score = Self::validate_reputation(&env, &user)?;
@@ -167,6 +169,10 @@ impl CreditLineContract {
         Ok(loan_id)
     }
 
+    /// Retrieve loans for a borrower paginated across fixed-size persistent index pages (`PAGE_SIZE = 32`).
+    ///
+    /// - `start`: zero-based loan index offset.
+    /// - `limit`: max number of loans to return.
     pub fn get_user_loans(env: Env, borrower: Address, start: u64, limit: u32) -> Vec<Loan> {
         storage::get_user_loans_paginated(&env, &borrower, start, limit)
             .unwrap_or_else(|err| panic_with_error!(&env, err))
@@ -281,6 +287,30 @@ impl CreditLineContract {
         admin.require_auth();
         access::require_admin(&env, &admin);
         storage::set_parameters_contract(&env, &address);
+    }
+
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        storage::set_paused(&env, true);
+        events::emit_paused(&env, &admin);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+        storage::set_paused(&env, false);
+        events::emit_unpaused(&env, &admin);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
+    fn require_not_paused(env: &Env) {
+        if storage::is_paused(env) {
+            panic_with_error!(env, CreditLineError::ContractPaused);
+        }
     }
 
     fn validate_guarantee(
@@ -504,6 +534,7 @@ impl CreditLineContract {
     /// `LoanNotActive` if the loan is not active.  Returns `Ok(())` when the
     /// warning event was successfully emitted (i.e. the loan is in the grace window).
     pub fn warn_grace_period(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env);
         let loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -543,6 +574,7 @@ impl CreditLineContract {
     }
 
     pub fn mark_defaulted(env: Env, loan_id: u64) -> Result<(), CreditLineError> {
+        Self::require_not_paused(&env);
         let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Active {
@@ -611,14 +643,29 @@ impl CreditLineContract {
             loan.guarantee_amount,
         );
 
+        // Policy: Option (a) - Propagate failure.
+        // If a reputation contract is configured (Some), the default penalty score update
+        // must succeed atomically with the loan default. If the score update call fails,
+        // we emit a ScoreUpdateFailed event and panic, reverting the entire transaction
+        // so loan state (Defaulted) and reputation score can never diverge.
+        // Note: If no reputation contract is configured (None), score updates are
+        // intentionally skipped as the protocol is operating without on-chain reputation integration.
         if let Some(reputation_contract) = storage::get_reputation_contract(&env)? {
             let penalty = Self::calculate_default_penalty(&env, &loan);
             let updater = env.current_contract_address();
-            let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+            let res = env.try_invoke_contract::<(), soroban_sdk::Error>(
                 &reputation_contract,
                 &Symbol::new(&env, "decrease_score"),
-                (updater, loan.borrower, penalty).into_val(&env),
+                (updater, loan.borrower.clone(), penalty).into_val(&env),
             );
+            let call_succeeded = match res {
+                Ok(Ok(())) => true,
+                _ => false,
+            };
+            if !call_succeeded {
+                events::emit_score_update_failed(&env, &loan.borrower, false, penalty);
+                panic_with_error!(&env, CreditLineError::ReputationCallFailed);
+            }
         }
 
         Self::exit_non_reentrant(&env);
@@ -629,6 +676,7 @@ impl CreditLineContract {
         // 1. Admin auth - must be first
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
+        Self::require_not_paused(&env);
 
         // 2. Load loan — panic if not found
         let mut loan =
@@ -699,34 +747,45 @@ impl CreditLineContract {
         loan
     }
 
-    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) {
+    pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError> {
         caller.require_auth();
+        Self::require_not_paused(&env);
 
-        let mut loan =
-            storage::read_loan(&env, loan_id).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let mut loan = storage::read_loan(&env, loan_id)?;
 
         if loan.status != LoanStatus::Pending {
-            panic_with_error!(&env, CreditLineError::LoanNotCancellable);
+            return Err(CreditLineError::LoanNotCancellable);
         }
 
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)?;
         if caller != loan.borrower && caller != admin {
-            panic_with_error!(&env, CreditLineError::UnauthorizedRepayer);
+            return Err(CreditLineError::UnauthorizedRepayer);
         }
 
-        let token_address = storage::get_token(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err))
-            .unwrap_or_else(|| panic_with_error!(&env, CreditLineError::TokenNotConfigured));
+        let token_address = storage::get_token(&env)?.ok_or(CreditLineError::TokenNotConfigured)?;
         let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &loan.borrower,
-            &loan.guarantee_amount,
-        );
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance < loan.guarantee_amount {
+            return Err(CreditLineError::InsufficientRefundBalance);
+        }
+
+        Self::enter_non_reentrant(&env);
 
         loan.status = LoanStatus::Cancelled;
         storage::write_loan(&env, &loan);
+
+        if loan.guarantee_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &loan.borrower,
+                &loan.guarantee_amount,
+            );
+        }
+
         events::emit_loan_cancelled(&env, &loan.borrower, loan_id, loan.guarantee_amount);
+        Self::exit_non_reentrant(&env);
+
+        Ok(())
     }
 
     pub fn repay_loan(
@@ -736,6 +795,11 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+
+        // Repayment Exception Policy:
+        // Repayments intentionally bypass the contract pause check.
+        // This ensures borrowers are not blocked from settling debt or penalized
+        // with accrued fees during an emergency administrative pause.
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -854,6 +918,11 @@ impl CreditLineContract {
         amount: i128,
     ) -> Result<i128, CreditLineError> {
         borrower.require_auth();
+
+        // Repayment Exception Policy:
+        // Repayments intentionally bypass the contract pause check.
+        // This ensures borrowers are not blocked from settling debt or penalized
+        // with accrued fees during an emergency administrative pause.
 
         let mut loan = storage::read_loan(&env, loan_id)?;
 
@@ -1086,6 +1155,12 @@ impl CreditLineContract {
         Ok(())
     }
 
+    /// Handles increasing reputation score upon full loan repayment.
+    ///
+    /// Policy: Option (a) - Propagate failure.
+    /// The score reward update must succeed atomically with full loan repayment.
+    /// If the score update call fails (reverts), we emit a ScoreUpdateFailed event and panic,
+    /// reverting the entire repayment transaction so loan state and reputation score can never diverge.
     fn handle_reputation_increase(
         env: &Env,
         reputation_contract: &Address,
@@ -1095,11 +1170,19 @@ impl CreditLineContract {
         due_date: u64,
     ) {
         let score_increase: u32 = if payment_date < due_date { 15 } else { 10 };
-        let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        let res = env.try_invoke_contract::<(), soroban_sdk::Error>(
             reputation_contract,
             &Symbol::new(env, "increase_score"),
             (updater, borrower, score_increase).into_val(env),
         );
+        let call_succeeded = match res {
+            Ok(Ok(())) => true,
+            _ => false,
+        };
+        if !call_succeeded {
+            events::emit_score_update_failed(env, borrower, true, score_increase);
+            panic_with_error!(env, CreditLineError::ReputationCallFailed);
+        }
     }
 
     fn get_protocol_parameters(env: &Env) -> ProtocolParameters {

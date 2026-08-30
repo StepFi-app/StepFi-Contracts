@@ -2958,3 +2958,90 @@ fn test_post_default_deposit_does_not_brick() {
     // New deposit should dominate the near-empty pool
     assert!(shares2 > 1_000);
 }
+
+// -----------------------------------------------------------------------------
+// Pause / Unpause Emergency Mechanism Tests
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_pause_unpause_requires_admin() {
+    let t = TestEnv::setup();
+    let non_admin = Address::generate(&t.env);
+
+    assert_eq!(t.client.is_paused(), false);
+
+    // Non-admin cannot pause
+    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    assert_eq!(t.client.try_pause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can pause
+    t.client.pause(&t.admin);
+    assert_eq!(t.client.is_paused(), true);
+
+    // Non-admin cannot unpause
+    assert_eq!(t.client.try_unpause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can unpause
+    t.client.unpause(&t.admin);
+    assert_eq!(t.client.is_paused(), false);
+}
+
+#[test]
+fn test_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+
+    t.mint(&provider, 10_000);
+    let shares = t.client.deposit(&provider, &5_000);
+
+    t.client.pause(&t.admin);
+    assert_eq!(t.client.is_paused(), true);
+
+    // Mutating functions blocked with ContractPaused
+    assert_eq!(
+        t.client.try_deposit(&provider, &1_000),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_withdraw(&provider, &shares),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &1_000),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_receive_guarantee(&t.creditline, &500),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_absorb_loss(&t.creditline, &500),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_distribute_interest(&t.creditline, &100),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+    assert_eq!(
+        t.client.try_accumulate_interest(&t.creditline, &100),
+        Err(Ok(LiquidityPoolError::ContractPaused))
+    );
+
+    // Repayment Exception Policy: receive_repayment is NOT blocked by pause
+    t.mint(&t.creditline, 1_000);
+    t.client.receive_repayment(&t.creditline, &1_000, &0);
+
+    // Query functions work fine while paused
+    assert_eq!(t.client.get_share_price(), 10_000);
+    assert_eq!(t.client.get_lp_shares(&provider), shares);
+    assert_eq!(t.client.get_pool_stats().total_liquidity, 5_000);
+    assert_eq!(t.client.calculate_withdrawal(&shares), 5_000);
+    assert_eq!(t.client.get_admin(), t.admin);
+    assert_eq!(t.client.get_version(), 1);
+
+    // Unpause restores operations
+    t.client.unpause(&t.admin);
+    assert_eq!(t.client.is_paused(), false);
+    assert!(t.client.deposit(&provider, &1_000) > 0);
+}

@@ -23,7 +23,13 @@ pub struct VendorRegistryContract;
 #[contractimpl]
 impl VendorRegistryContract {
     /// Initializes the contract with an admin
+    ///
+    /// Requires the admin to sign the transaction (require_auth) to prevent
+    /// front-running attacks where an attacker could call initialize() first
+    /// and permanently seize admin control of the contract.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+
         if storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
         }

@@ -38,12 +38,17 @@ impl ParametersContract {
         Self::initialize(env, admin, default_parameters());
     }
 
+    /// Step 1 of a two-step multisig configuration. Admin-only: records a
+    /// pending signer set and emits a prominent on-chain event before anything
+    /// is applied. A single admin key can therefore no longer swap the signer
+    /// set silently — the intent is broadcast in a dedicated `MSCONFPR` event,
+    /// and the change is only applied by the explicit `confirm_multisig` step.
     pub fn configure_multisig(env: Env, signers: Vec<Address>, threshold: u32) {
         let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
         access::require_admin(&env, &admin);
 
-        if storage::has_multisig(&env) {
+        if storage::has_multisig(&env) || storage::has_pending_multisig(&env) {
             panic_with_error!(&env, ParametersError::MultisigAlreadyConfigured);
         }
 
@@ -51,7 +56,27 @@ impl ParametersContract {
         Self::validate_multisig_config(&env, &config);
 
         Self::enter_non_reentrant(&env);
+        storage::set_pending_multisig(&env, &config);
+        events::emit_multisig_configure_proposed(&env, &admin, &config);
+        Self::exit_non_reentrant(&env);
+    }
+
+    /// Step 2 of the two-step multisig configuration. Admin-only: applies the
+    /// pending signer set previously proposed via `configure_multisig`.
+    pub fn confirm_multisig(env: Env) {
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        admin.require_auth();
+        access::require_admin(&env, &admin);
+
+        if storage::has_multisig(&env) {
+            panic_with_error!(&env, ParametersError::MultisigAlreadyConfigured);
+        }
+        let config =
+            storage::get_pending_multisig(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+
+        Self::enter_non_reentrant(&env);
         storage::set_multisig(&env, &config);
+        storage::clear_pending_multisig(&env);
         events::emit_multisig_configured(&env, config.threshold, config.signers.len());
         Self::exit_non_reentrant(&env);
     }
@@ -70,6 +95,12 @@ impl ParametersContract {
             _ => {}
         }
 
+        // Snapshot the current eligible signer set so approvals can be
+        // re-validated against it at approve() and execute() time — a signer
+        // removed (or added) after this point cannot influence this proposal.
+        let config = storage::get_multisig(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let snapshot = config.signers;
+
         let now = env.ledger().timestamp();
         let expires_at = now
             .checked_add(PROPOSAL_TTL_SECONDS)
@@ -84,11 +115,14 @@ impl ParametersContract {
             action,
             proposer: proposer.clone(),
             approvals,
+            snapshot,
             created_at: now,
             expires_at,
             executed: false,
+            invalidated: false,
         };
         storage::set_proposal(&env, &proposal);
+        storage::add_active_proposal(&env, id);
         events::emit_proposal_created(&env, id, &proposer);
         id
     }
@@ -103,11 +137,19 @@ impl ParametersContract {
         if proposal.executed {
             panic_with_error!(&env, ParametersError::ProposalAlreadyExecuted);
         }
+        if proposal.invalidated {
+            panic_with_error!(&env, ParametersError::ProposalInvalidated);
+        }
         if env.ledger().timestamp() > proposal.expires_at {
             panic_with_error!(&env, ParametersError::ProposalExpired);
         }
         if proposal.approvals.contains(&signer) {
             panic_with_error!(&env, ParametersError::DuplicateSignature);
+        }
+        // The signer is currently a member (checked above), but it must also
+        // have been a member when the proposal was created.
+        if !proposal.snapshot.contains(&signer) {
+            panic_with_error!(&env, ParametersError::ApproverNotEligible);
         }
 
         proposal.approvals.push_back(signer.clone());
@@ -115,8 +157,9 @@ impl ParametersContract {
         events::emit_proposal_approved(&env, proposal_id, &signer, proposal.approvals.len());
     }
 
-    /// Execute a proposal once it has collected at least `threshold` approvals.
-    /// Permissionless — the collected approvals are the authorization.
+    /// Execute a proposal once it has collected the required number of
+    /// eligible approvals. Permissionless — the collected approvals are the
+    /// authorization.
     pub fn execute(env: Env, proposal_id: u64) {
         let mut proposal =
             storage::get_proposal(&env, proposal_id).unwrap_or_else(|err| panic_with_error!(&env, err));
@@ -124,12 +167,18 @@ impl ParametersContract {
         if proposal.executed {
             panic_with_error!(&env, ParametersError::ProposalAlreadyExecuted);
         }
+        if proposal.invalidated {
+            panic_with_error!(&env, ParametersError::ProposalInvalidated);
+        }
         if env.ledger().timestamp() > proposal.expires_at {
             panic_with_error!(&env, ParametersError::ProposalExpired);
         }
 
         let config = storage::get_multisig(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
-        if proposal.approvals.len() < config.threshold {
+        // Re-validate every stored approval against the proposal's snapshot AND
+        // the current signer set; any approver removed since is never counted.
+        Self::require_eligible_approvers(&env, &config, &proposal);
+        if proposal.approvals.len() < Self::required_quorum(&config, &proposal.action) {
             panic_with_error!(&env, ParametersError::ThresholdNotMet);
         }
 
@@ -138,8 +187,7 @@ impl ParametersContract {
             ProposalAction::UpdateParameters(p) => Self::do_update_parameters(&env, &p),
             ProposalAction::SetAdmin(a) => Self::do_set_admin(&env, &a),
             ProposalAction::Upgrade(h) => Self::do_upgrade(&env, h),
-            ProposalAction::UpdateSigners(c) => Self::do_update_signers(&env, &c),
-            ProposalAction::SetLateFeeBps(b) => Self::do_set_late_fee_bps(&env, b),
+            ProposalAction::UpdateSigners(c) => Self::do_update_signers(&env, &c, proposal.id),
         }
 
         proposal.executed = true;
@@ -187,10 +235,61 @@ impl ParametersContract {
         events::emit_contract_upgraded(env, old, new);
     }
 
-    fn do_update_signers(env: &Env, config: &MultisigConfig) {
+    fn do_update_signers(env: &Env, config: &MultisigConfig, executing_proposal_id: u64) {
         Self::validate_multisig_config(env, config);
         storage::set_multisig(env, config);
         events::emit_multisig_configured(env, config.threshold, config.signers.len());
+        // Any other in-flight proposal targeting the signer set is now stale —
+        // its snapshot no longer reflects the active committee. Void it so it
+        // cannot quietly execute against an outdated configuration.
+        Self::invalidate_signer_set_proposals(env, executing_proposal_id);
+    }
+
+    fn invalidate_signer_set_proposals(env: &Env, executing_proposal_id: u64) {
+        for id in storage::get_active_proposals(env).iter() {
+            if id == executing_proposal_id {
+                continue;
+            }
+            if let Ok(proposal) = storage::get_proposal(env, id) {
+                let is_signer_action = matches!(&proposal.action, ProposalAction::UpdateSigners(_));
+                if !proposal.executed && !proposal.invalidated && is_signer_action {
+                    let mut invalidated = proposal;
+                    invalidated.invalidated = true;
+                    storage::set_proposal(env, &invalidated);
+                    events::emit_proposal_invalidated(env, id);
+                }
+            }
+        }
+    }
+
+    /// Rejects a proposal if any stored approver is no longer a member of both
+    /// the proposal-time snapshot and the current signer set. This is what
+    /// guarantees removed signers' approvals are never counted at execution.
+    fn require_eligible_approvers(env: &Env, config: &MultisigConfig, proposal: &Proposal) {
+        for i in 0..proposal.approvals.len() {
+            let approver = proposal.approvals.get_unchecked(i);
+            if !proposal.snapshot.contains(&approver) || !config.signers.contains(&approver) {
+                panic_with_error!(env, ParametersError::ApproverNotEligible);
+            }
+        }
+    }
+
+    /// Required quorum for a proposal. Signer-set changes are escalation-guarded:
+    /// they need `threshold + 1` approvals, capped at the full signer count
+    /// (i.e. unanimity for already-unanimous sets), so a committee can never
+    /// cheapen its own gate with old-threshold approvals.
+    fn required_quorum(config: &MultisigConfig, action: &ProposalAction) -> u32 {
+        match action {
+            ProposalAction::UpdateSigners(_) => {
+                let n = config.signers.len();
+                config
+                    .threshold
+                    .checked_add(1)
+                    .map(|elevated| elevated.min(n))
+                    .unwrap_or(n)
+            }
+            _ => config.threshold,
+        }
     }
 
     fn do_set_late_fee_bps(env: &Env, bps: u32) {

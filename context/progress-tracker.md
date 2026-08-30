@@ -16,6 +16,29 @@ Update this file after every completed contract change, fix, or architectural de
 
 ## Completed
 
+### Issue #107 — Parameters-Contract Multisig: Snapshot Sovereignty, Elevated Quorum & Two-Step Configuration
+- **Problem:** Three flaws combined to make the parameters-contract multisig (`contracts/parameters-contract/src/lib.rs`) theater, not security: (1) `configure_multisig()` needed only the single admin key, so one compromised key could silently swap the signer set and sidestep the multisig entirely; (2) proposals stored `approvals: Vec<Address>` and `execute()` only checked `approvals.len() >= threshold`, so approvals from signers *removed* since approval remained counted — revoked signers kept veto/exec power over in-flight proposals (a colluding signer + one stale approval could rewrite `interest bps`, `min_guarantee_percent`, `grace_period_seconds`, etc.); (3) `UpdateSigners` executed against the current config with no escalation guard, so a 2-of-3 committee needed only 2 old-threshold approvals to install a weaker 2-of-2 (or admit a colluder).
+- **Fix (`parameters-contract`):**
+  - **Signer-set snapshot on every proposal.** `Proposal` gained `snapshot: Vec<Address>` (the eligible signer set at proposal time) and `invalidated: bool`. `propose()` records the snapshot; `approve()` rejects signers not present in the snapshot (`ApproverNotEligible = 19`); `execute()` re-validates **every** stored approval against the snapshot **and** the current signer set before counting it (`require_eligible_approvers`), so removed signers' approvals are never counted and newly-added signers can't influence older proposals. `access::require_signer` still gates approval-time current membership.
+  - **Elevated quorum for signer-set changes.** `required_quorum()` returns `threshold + 1` (capped at the full signer count → unanimity for already-unanimous sets) for `UpdateSigners` actions; all other actions keep `threshold`. A committee can no longer cheapen its own gate with old-threshold approvals (`ThresholdNotMet = 17` when unmet).
+  - **Two-step `configure_multisig` → `confirm_multisig`.** `configure_multisig` (admin, one-time) now only records a *pending* config and emits a prominent `MSCONFPR` event carrying the full proposed signer set; the set is only activated by the explicit `confirm_multisig` step (admin, emits the existing `MSCONFIG`). A single admin call can no longer silently swap the signer set — the intent is broadcast on-chain before any change is applied, and the initial config remains one-time-locked.
+  - **In-flight signer-set proposals invalidated on signer-set change.** New `PROPIDS` instance index tracks proposals; when a signer-set change executes (`do_update_signers`), every *other* non-executed `UpdateSigners` proposal is voided (`invalidated = true`, `ProposalInvalidated = 18`, emitted via new `PROPIVLD` event). Non-signer proposals survive but any stale approver blocks execution via the membership re-validation. `test_snapshots/` are gitignored per repo convention.
+- **Files:** `contracts/parameters-contract/src/lib.rs`, `contracts/parameters-contract/src/storage.rs`, `contracts/parameters-contract/src/types.rs`, `contracts/parameters-contract/src/events.rs`, `contracts/parameters-contract/src/errors.rs`, `contracts/parameters-contract/src/tests.rs`, `contracts/creditline-contract/src/tests.rs` (added `confirm_multisig()` between configure and propose in the governance integration test), `context/progress-tracker.md`. `events.rs` and `errors.rs` were necessarily touched for the additive event/error surface required by the fix; the existing event symbols (`MSCONFIG`, `PROPNEW`, `PROPAPPR`, `PROPEXEC`, etc.) and error codes 1–17 are preserved.
+- **New tests (34 parameters + full workspace green):**
+  - **Exploit reproduction (end-to-end):** `test_stale_approval_from_removed_signer_is_never_counted` — 2-of-3 set, s1 proposes params + s2 approves (stale), s2 removed via `UpdateSigners`, then the old proposal's `execute` must fail and params must remain unchanged. **Pre-fix this test fails** (the proposal executed, rewriting params — the exact exploit); **post-fix it passes** (removed signer's approval is never counted). Also: `test_execute_rejects_proposal_whose_approver_was_removed` (#19), `test_removed_signer_cannot_approve_after_removal` (#10), `test_newly_added_signer_cannot_approve_old_proposal` (#19).
+  - **Elevated quorum:** `test_update_signers_requires_elevated_quorum` (#17 with 2-of-3 + 2 approvals), `test_update_signers_with_elevated_quorum_executes`, `test_signer_change_quorum_capped_at_full_committee_for_unanimous_set` (2-of-2 needs unanimity), `test_update_signers_via_proposal` updated to collect 3 approvals and assert snapshot.
+  - **Two-step config:** `test_configure_multisig_two_step_propose_confirm_emits_prominent_events` (MSCONFPR before activation, MSCONFIG after confirm, not-active-after-propose), `test_confirm_multisig_without_propose_fails` (#9), `test_configure_multisig_cannot_repropose_without_confirm` (#8), `test_confirm_multisig_cannot_be_called_twice` (#8), updated 2-step setup in `setup_multisig`/`test_three_of_three_with_full_committee_approval`.
+  - **Invalidation sweep:** `test_in_flight_signer_set_proposals_are_invalidated_on_signer_change` (+PROPIVLD event), `test_approve_rejects_invalidated_signer_set_proposal` (#18), `test_parameter_proposals_survive_signer_change_but_stale_approvals_revalidated`.
+- **Verification:** `cargo build --locked` (zero errors), `cargo test --locked` → **399 passed, 0 failed** workspace-wide (parameters 34, creditline 143, liquidity-pool 109, reputation 60, vendor-registry 26, vouching 27).
+- **Problem:** `set_admin()` in `contracts/reputation-contract/src/lib.rs` contained an unauthenticated fallback branch when no admin was stored, allowing anyone to claim admin of the reputation contract without authorization.
+- **Fix (`reputation-contract`):**
+  - Added explicit, one-time `initialize(env, admin) -> Result<(), ReputationError>` function that requires `admin.require_auth()` and checks `storage::has_admin(&env)` (rejects re-initialization with `AlreadyInitialized = 11`).
+  - Updated `set_admin(env, new_admin) -> Result<(), ReputationError>` to fetch `old_admin = storage::get_admin(&env)?` (panics/returns `NotInitialized` when uninitialized) and enforce `old_admin.require_auth()` + `access::require_admin(&env, &old_admin)`.
+  - Added `has_admin(env)` in `storage.rs`.
+  - Added `AlreadyInitialized` error variant in `errors.rs`.
+  - Added new unit tests covering: unauthenticated first-time `set_admin` rejection (`NotInitialized`), single authorized `initialize`, double initialization rejection (`AlreadyInitialized`), unauthenticated `initialize` rejection, and end-to-end updater flow preservation.
+  - Updated test setup in `reputation-contract/src/tests.rs` and `creditline-contract/src/tests.rs` (`RealIntegrationCtx`), deployment script (`scripts/deploy-testnet.sh`), deployment metadata (`contracts/deployed-testnet.json`), and contract documentation (`contracts/reputation-contract/README.md`).
+
 ### `approve_loan` Pending Loan Funding & Re-Validation Fix
 - **Problem:** `approve_loan()` previously activated pending loans without validating vendor status, checking reputation score, or checking available pool liquidity, and without calling `fund_loan()` on the liquidity pool to lock contribution funds or transferring funds to the vendor.
 - **Fix (`creditline-contract`):**
@@ -175,6 +198,14 @@ Update this file after every completed contract change, fix, or architectural de
 
 ### Issue #59 — Socialize Default Losses to Pool Share Price
 - Added `absorb_loss(creditline, principal_shortfall)` entrypoint to `liquidity-pool-contract` restricted to the registered CreditLine
+
+### Issue #79 — Admin Auth in Vendor Registry Initialize
+- Added `admin.require_auth()` as the literal first line of `vendor_registry::initialize()` to prevent admin-hijack front-run attacks
+- Reordered guard order to: `require_auth()` → `has_admin` check → state writes, consistent with `parameters-contract` and `liquidity-pool` patterns
+- Wrote test proving unauthorized caller cannot complete initialization (auth failure, not just state rejection)
+- Wrote test proving second `initialize()` call returns `AlreadyInitialized`
+- All existing tests still pass; new test count has not decreased
+- Fixed: No `.unwrap()` or `.expect()` introduced in user-facing paths
 - Reduces both `locked_liquidity` and `total_liquidity` by the unrecovered principal, with independent caps to prevent negative accounting
 - Added `LQLOSS` event (`emit_loss_absorbed`) to liquidity-pool events
 - Updated `mark_defaulted()` to compute `principal_shortfall = principal_outstanding - guarantee_amount` and call `absorb_loss` after `receive_guarantee`
@@ -184,6 +215,31 @@ Update this file after every completed contract change, fix, or architectural de
 - Fixed: `IntoVal` import moved before first usage in `test_mark_defaulted_loss_absorption_share_price_impact`
 
 ## Recently Fixed
+
+### Security: Contract Pause & Unpause Emergency Stop Mechanism
+- **Problem:** Neither `liquidity-pool-contract` nor `creditline-contract` implemented a pause/unpause emergency stop mechanism. During an exploit or bad parameterization, there was no way to halt state transitions (deposits, withdrawals, loan funding, loan creation, defaults) without an emergency WASM upgrade.
+- **Fix:**
+  - Implemented `paused: bool` in instance storage (`storage::is_paused`, `storage::set_paused`).
+  - Added `pause(env, admin)` and `unpause(env, admin)` functions restricted to contract admin (`admin.require_auth()` as the literal first line), emitting `PAUSED` and `UNPAUSED` events.
+  - Added `is_paused(env) -> bool` view function.
+  - Guarded all state-mutating entry points (`deposit`, `withdraw`, `fund_loan`, `receive_guarantee`, `absorb_loss`, `distribute_interest`, `accumulate_interest` in `liquidity-pool-contract`; `create_loan`, `request_loan`, `approve_loan`, `cancel_loan`, `mark_defaulted`, `warn_grace_period` in `creditline-contract`) with `require_not_paused(&env)` helper.
+  - **Repayment Exception Policy:** Loan repayments (`repay_loan`, `repay_installment`, `receive_repayment`) intentionally bypass pause checks so borrowers are not penalized with accrued late fees or forced defaults during an administrative freeze. Documented in code comments and unit tests.
+  - Query functions (`get_share_price`, `get_pool_stats`, `get_lp_shares`, `calculate_withdrawal`, `get_loan`, `get_user_loans`, `get_user_active_debt`, `get_version`, `get_admin`) remain 100% accessible while paused.
+  - Added `ContractPaused = 15` variant to `LiquidityPoolError` and `ContractPaused = 33` variant to `CreditLineError`.
+- **Files:** `contracts/liquidity-pool-contract/src/lib.rs`, `contracts/liquidity-pool-contract/src/storage.rs`, `contracts/liquidity-pool-contract/src/events.rs`, `contracts/liquidity-pool-contract/src/errors.rs`, `contracts/liquidity-pool-contract/src/tests.rs`, `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/storage.rs`, `contracts/creditline-contract/src/events.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/tests.rs`, `context/progress-tracker.md`
+- **New tests:** Comprehensive unit tests in both contract suites testing admin-only pause/unpause, mutating function rejection with `ContractPaused`, repayment exception policy execution, and query availability while paused.
+- **Verification:** All 142 tests in `creditline-contract`, 109 tests in `liquidity-pool-contract`, and 393 tests across the entire workspace passed with zero failures.
+
+### Security: `cancel_loan()` Ordering Discipline, Reentrancy Guard & Pre-Flight Check
+- **Problem:** `cancel_loan()` in `creditline-contract` violated contract ordering discipline by omitting `enter_non_reentrant`/`exit_non_reentrant` guards, executing outbound token transfers before mutating status to `Cancelled` and persisting state, and missing token balance pre-flight validation (causing raw token panic on underfunded contract balance).
+- **Fix:**
+  - Wrapped mutation section in `enter_non_reentrant(&env)` and `exit_non_reentrant(&env)` matching sibling functions.
+  - Reordered execution flow: validate parameters/auth → pre-flight contract token balance check → enter non-reentrant guard → mutate status to `Cancelled` and persist to storage → execute outbound guarantee token refund transfer → emit `LOANCNCL` event → exit non-reentrant guard.
+  - Pre-flight check: queries creditline contract token balance against `loan.guarantee_amount`. If underfunded, returns `Err(CreditLineError::InsufficientRefundBalance)` leaving loan state in `Pending` without panic or state corruption.
+  - Added new error variant `InsufficientRefundBalance = 31` to `CreditLineError`.
+  - Signature updated to `pub fn cancel_loan(env: Env, caller: Address, loan_id: u64) -> Result<(), CreditLineError>`.
+- **Files:** `contracts/creditline-contract/src/lib.rs`, `contracts/creditline-contract/src/errors.rs`, `contracts/creditline-contract/src/tests.rs`
+- **New tests:** 7 comprehensive security & order proof unit tests (happy-case refund, admin cancellation, reentrancy lock rejection, unauthorized caller rejection, double-cancel rejection, underfunded contract typed error, state persistence ordering proof).
 
 ### Security: Unauthorized `distribute_interest` / `accumulate_interest` (SC-17)
 - **Problem:** `distribute_interest()` and `accumulate_interest()` were public mutating functions with no `require_auth()` and no caller restriction. Any funded account could call them with an arbitrary amount, draining the pool's token balance to treasury and merchant fund addresses and inflating the share price so the caller could redeem LP shares for more than deposited.

@@ -17,7 +17,7 @@ fn it_sets_admin() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let retrieved_admin = client.get_admin();
     assert_eq!(retrieved_admin, admin);
@@ -46,7 +46,7 @@ fn it_gets_admin() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let retrieved = client.get_admin();
     assert_eq!(retrieved, admin);
@@ -62,7 +62,7 @@ fn it_sets_updater() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -80,7 +80,7 @@ fn it_checks_updater() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     let non_updater = Address::generate(&env);
@@ -101,7 +101,7 @@ fn it_gets_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -124,7 +124,7 @@ fn it_increases_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -147,7 +147,7 @@ fn it_decreases_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -170,7 +170,7 @@ fn it_sets_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -193,7 +193,7 @@ fn it_adds_boost() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -215,7 +215,7 @@ fn it_removes_boost() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -239,7 +239,7 @@ fn it_prevents_unauthorized_updates() {
 
     let admin = Address::generate(&env);
     env.mock_all_auths();
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let user = Address::generate(&env);
     let unauthorized = Address::generate(&env);
@@ -258,7 +258,7 @@ fn it_enforces_score_bounds() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -299,7 +299,7 @@ fn it_allows_admin_upgrade_and_bumps_version() {
     let contract_id = env.register(ReputationContract, ());
     let client = ReputationContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     assert_eq!(client.get_version(), 1u32);
     let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
@@ -331,7 +331,7 @@ fn test_reputation_upgrade_without_propose_fails() {
     let contract_id = env.register(ReputationContract, ());
     let client = ReputationContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     client.upgrade(&wasm_hash);
@@ -346,7 +346,7 @@ fn test_reputation_upgrade_before_timelock_elapses_fails() {
     let contract_id = env.register(ReputationContract, ());
     let client = ReputationContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     client.propose_upgrade(&wasm_hash);
@@ -362,7 +362,7 @@ fn test_reputation_upgrade_with_wrong_hash_fails() {
     let contract_id = env.register(ReputationContract, ());
     let client = ReputationContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let wasm_hash1 = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     let wasm_hash2 = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
@@ -382,7 +382,7 @@ fn it_revokes_updater_access_after_removal() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -408,7 +408,7 @@ fn it_emits_event_on_updater_removal() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -428,7 +428,7 @@ fn it_handles_removing_non_existent_updater() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let never_added = Address::generate(&env);
 
@@ -447,7 +447,7 @@ fn it_prevents_overflow_on_increase() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -468,7 +468,7 @@ fn it_prevents_overflow_at_max() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -488,7 +488,7 @@ fn it_allows_increase_up_to_max() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -510,7 +510,7 @@ fn it_prevents_underflow_on_decrease() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -531,7 +531,7 @@ fn it_prevents_underflow_at_min() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -551,7 +551,7 @@ fn it_allows_decrease_down_to_min() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -573,7 +573,7 @@ fn it_removing_one_updater_does_not_affect_others() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater1 = Address::generate(&env);
     let updater2 = Address::generate(&env);
@@ -604,7 +604,7 @@ fn it_emits_score_changed_event_on_increase() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -650,7 +650,7 @@ fn it_emits_score_changed_event_on_decrease() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -701,7 +701,7 @@ fn it_emits_score_changed_event_on_set() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -749,7 +749,7 @@ fn it_emits_updater_changed_event_on_grant() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
 
@@ -788,7 +788,7 @@ fn it_emits_updater_changed_event_on_revoke() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -828,7 +828,7 @@ fn it_emits_admin_changed_event() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let new_admin = Address::generate(&env);
 
@@ -868,7 +868,7 @@ fn it_emits_admin_changed_event_on_initial_setup() {
 
     let admin = Address::generate(&env);
 
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let events: Vec<(Address, Vec<Val>, Val)> = env.events().all();
 
@@ -893,6 +893,91 @@ fn it_emits_admin_changed_event_on_initial_setup() {
 }
 
 // ============================================================================
+// Initialization Security Tests
+// ============================================================================
+
+#[test]
+fn test_unauthenticated_first_time_set_admin_fails() {
+    let env = Env::default();
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    assert_eq!(
+        client.try_set_admin(&new_admin),
+        Err(Ok(ReputationError::NotInitialized))
+    );
+}
+
+#[test]
+fn test_initialize_works_once_with_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    assert_eq!(client.initialize(&admin), ());
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_second_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    client.initialize(&admin1);
+
+    let admin2 = Address::generate(&env);
+    assert_eq!(
+        client.try_initialize(&admin2),
+        Err(Ok(ReputationError::AlreadyInitialized))
+    );
+}
+
+#[test]
+fn test_initialize_requires_auth() {
+    let env = Env::default();
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let res = client.try_initialize(&admin);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_updater_flows_end_to_end_after_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReputationContract, ());
+    let client = ReputationContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let updater = Address::generate(&env);
+    client.set_updater(&admin, &updater, &true);
+    assert!(client.is_updater(&updater));
+
+    let user = Address::generate(&env);
+    client.set_score(&updater, &user, &50);
+    assert_eq!(client.get_score(&user), 50);
+
+    client.increase_score(&updater, &user, &20);
+    assert_eq!(client.get_score(&user), 70);
+
+    client.decrease_score(&updater, &user, &10);
+    assert_eq!(client.get_score(&user), 60);
+}
+
+// ============================================================================
 // Admin Succession Tests (Feature #14)
 // ============================================================================
 
@@ -909,7 +994,7 @@ fn it_supports_admin_succession() {
     let admin2 = Address::generate(&env);
     let admin3 = Address::generate(&env);
 
-    client.set_admin(&admin1);
+    client.initialize(&admin1);
     assert_eq!(client.get_admin(), admin1);
 
     client.set_admin(&admin2);
@@ -933,7 +1018,7 @@ fn it_allows_admin_to_set_same_admin() {
 
     let admin = Address::generate(&env);
 
-    client.set_admin(&admin);
+    client.initialize(&admin);
     assert_eq!(client.get_admin(), admin);
 
     client.set_admin(&admin);
@@ -956,7 +1041,7 @@ fn it_preserves_user_scores_during_admin_changes() {
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
 
-    client.set_admin(&admin1);
+    client.initialize(&admin1);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin1, &updater, &true);
@@ -993,7 +1078,7 @@ fn it_preserves_updater_permissions_during_admin_changes() {
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
 
-    client.set_admin(&admin1);
+    client.initialize(&admin1);
 
     let updater1 = Address::generate(&env);
     let updater2 = Address::generate(&env);
@@ -1031,7 +1116,7 @@ fn it_revokes_old_admin_permissions_completely() {
     let admin2 = Address::generate(&env);
 
     env.mock_all_auths();
-    client.set_admin(&admin1);
+    client.initialize(&admin1);
     client.set_admin(&admin2);
 
     assert_eq!(client.get_admin(), admin2);
@@ -1054,7 +1139,7 @@ fn it_grants_new_admin_full_permissions() {
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
 
-    client.set_admin(&admin1);
+    client.initialize(&admin1);
     client.set_admin(&admin2);
 
     let updater = Address::generate(&env);
@@ -1083,7 +1168,7 @@ fn it_allows_zero_increase_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1107,7 +1192,7 @@ fn it_allows_zero_decrease_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1135,7 +1220,7 @@ fn test_reentrancy_guard_rejects_reentrant_increase_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1163,7 +1248,7 @@ fn test_reentrancy_guard_rejects_reentrant_decrease_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1190,7 +1275,7 @@ fn test_reentrancy_guard_rejects_reentrant_set_score() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1216,7 +1301,7 @@ fn test_reentrancy_guard_rejects_reentrant_add_boost() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1243,7 +1328,7 @@ fn test_reentrancy_guard_rejects_reentrant_remove_boost() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1270,7 +1355,7 @@ fn test_reentrancy_guard_rejects_reentrant_set_updater() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
 
@@ -1293,7 +1378,7 @@ fn test_reentrancy_guard_rejects_reentrant_set_admin() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let new_admin = Address::generate(&env);
 
@@ -1316,7 +1401,7 @@ fn test_reentrancy_guard_allows_normal_operations() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1358,7 +1443,7 @@ fn test_reentrancy_guard_is_released_after_call() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1383,7 +1468,7 @@ fn it_allows_setting_score_to_current_value() {
     let client = ReputationContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let updater = Address::generate(&env);
     client.set_updater(&admin, &updater, &true);
@@ -1431,7 +1516,7 @@ fn test_reputation_upgrade_delay_parameterized_via_parameters_contract() {
     let contract_id = env.register(ReputationContract, ());
     let client = ReputationContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.set_admin(&admin);
+    client.initialize(&admin);
 
     let params_id = env.register(MockParametersContract, ());
     client.set_parameters_contract(&params_id);

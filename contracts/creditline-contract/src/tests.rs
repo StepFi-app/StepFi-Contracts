@@ -2571,7 +2571,7 @@ impl RealIntegrationCtx {
         let creditline: CreditLineContractClient<'static> =
             unsafe { core::mem::transmute(creditline) };
 
-        reputation.set_admin(&admin);
+        reputation.initialize(&admin);
         reputation.set_updater(&admin, &admin, &true);
         reputation.set_updater(&admin, &creditline_id, &true);
 
@@ -2719,6 +2719,7 @@ fn test_parameters_contract_controls_guarantee_thresholds() {
         &soroban_sdk::vec![&t.env, signer_a.clone(), signer_b.clone()],
         &2u32,
     );
+    t.parameters.confirm_multisig();
     let proposal_id = t
         .parameters
         .propose(&signer_a, &ProposalAction::UpdateParameters(params));
@@ -3187,10 +3188,10 @@ fn test_partial_repayment_does_not_change_reputation_score() {
 }
 
 #[test]
-fn test_reputation_call_failure_does_not_block_repayment() {
-    // Even if the reputation contract call fails, the loan repayment must succeed
-    // We verify this by removing the creditline as a reputation updater and
-    // confirming the loan still moves to Paid status.
+fn test_reputation_call_failure_reverts_repayment() {
+    // Policy (a): Revert surrounding operation on reputation call failure.
+    // If the reputation contract call fails, the repayment transaction must revert completely
+    // so loan status and score never diverge.
     let t = RealIntegrationCtx::setup();
     let provider = Address::generate(&t.env);
     let user = Address::generate(&t.env);
@@ -3214,13 +3215,52 @@ fn test_reputation_call_failure_does_not_block_repayment() {
     // Revoke updater permission so the increase_score call will fail
     t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
 
-    // Repayment must still succeed despite the reputation call failure
-    t.creditline.repay_loan(&user, &loan_id, &total_due);
+    // Repayment must fail with ReputationCallFailed
+    let res = t.creditline.try_repay_loan(&user, &loan_id, &total_due);
+    assert_eq!(res, Err(Ok(CreditLineError::ReputationCallFailed)));
 
-    let loan = t.creditline.get_loan(&loan_id);
-    assert_eq!(loan.status, LoanStatus::Paid);
-    assert_eq!(loan.remaining_balance, 0);
-    // Score unchanged because the call was silently ignored
+    // Loan status remains Active and balance remains unchanged because transaction reverted
+    let loan_after = t.creditline.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Active);
+    assert_eq!(loan_after.remaining_balance, total_due);
+    assert_eq!(t.reputation.get_score(&user), 60);
+}
+
+#[test]
+fn test_reputation_call_failure_reverts_default() {
+    // Policy (a): Revert surrounding operation on reputation call failure.
+    // If the reputation contract call fails during mark_defaulted(), the default transaction must revert completely.
+    let t = RealIntegrationCtx::setup();
+    let provider = Address::generate(&t.env);
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    t.fund_pool(&provider, 10_000);
+    t.register_vendor(&vendor, "Default Vendor");
+    t.set_score(&user, 60);
+    t.mint(&user, 500);
+
+    let now = t.env.ledger().timestamp();
+    let schedule = t.single_installment(1_000, now + 1_000);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Advance time past grace period
+    t.env
+        .ledger()
+        .set_timestamp(now + 1_000 + 86_400 * 7 + 1);
+
+    // Revoke creditline updater permission on reputation contract
+    t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
+
+    // Defaulting must fail with ReputationCallFailed
+    let res = t.creditline.try_mark_defaulted(&loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::ReputationCallFailed)));
+
+    // Loan status remains Active because default transaction reverted
+    let loan_after = t.creditline.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Active);
     assert_eq!(t.reputation.get_score(&user), 60);
 }
 
@@ -4314,4 +4354,222 @@ fn test_creditline_upgrade_delay_parameterized_via_parameters_contract() {
     ctx.client.propose_upgrade(&wasm_real);
     ctx.env.ledger().set_timestamp(172_801 + 172_801);
     ctx.client.execute_upgrade(&wasm_real);
+}
+
+// ─── cancel_loan Security & Order Proof Tests ──────────────────────────────────
+
+#[test]
+fn test_cancel_loan_happy_path_refunds_guarantee() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    assert_eq!(ctx.balance(&user), 0);
+    assert_eq!(ctx.balance(&ctx.client.address), DEFAULT_GUARANTEE);
+
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+}
+
+#[test]
+fn test_cancel_loan_admin_can_cancel() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&ctx.admin, &loan_id);
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Cancelled);
+    assert_eq!(ctx.balance(&user), DEFAULT_GUARANTEE);
+}
+
+#[test]
+fn test_cancel_loan_reentrancy_lock_engages() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.env.as_contract(&ctx.client.address, || {
+        ctx.env
+            .storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("LOCKED"), &true);
+    });
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::ReentrancyDetected)));
+}
+
+#[test]
+fn test_cancel_loan_unauthorized_caller_rejected() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let stranger = Address::generate(&ctx.env);
+    let res = ctx.client.try_cancel_loan(&stranger, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::UnauthorizedRepayer)));
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+}
+
+#[test]
+fn test_cancel_loan_double_cancel_rejected() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::LoanNotCancellable)));
+}
+
+#[test]
+fn test_cancel_loan_underfunded_contract_returns_typed_error() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let drain_target = Address::generate(&ctx.env);
+    ctx.env.as_contract(&ctx.client.address, || {
+        let token_client = soroban_sdk::token::Client::new(&ctx.env, &ctx.token_id);
+        token_client.transfer(&ctx.client.address, &drain_target, &DEFAULT_GUARANTEE);
+    });
+
+    assert_eq!(ctx.balance(&ctx.client.address), 0);
+
+    let res = ctx.client.try_cancel_loan(&user, &loan_id);
+    assert_eq!(res, Err(Ok(CreditLineError::InsufficientRefundBalance)));
+
+    let loan = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Pending);
+}
+
+#[test]
+fn test_cancel_loan_state_persists_before_transfer() {
+    let ctx = TestCtx::setup();
+    let user = Address::generate(&ctx.env);
+    let vendor = Address::generate(&ctx.env);
+    let loan_id = ctx.create_default_request(&user, &vendor);
+
+    let loan_before = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_before.status, LoanStatus::Pending);
+
+    ctx.client.cancel_loan(&user, &loan_id);
+
+    let loan_after = ctx.client.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Cancelled);
+}
+
+// -----------------------------------------------------------------------------
+// Pause / Unpause Emergency Stop Mechanism Tests
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_creditline_pause_unpause_requires_admin() {
+    let t = TestCtx::setup();
+    let non_admin = Address::generate(&t.env);
+
+    assert_eq!(t.client.is_paused(), false);
+
+    // Non-admin cannot pause
+    let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::NotAdmin as u32);
+    assert_eq!(t.client.try_pause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can pause
+    t.client.pause(&t.admin);
+    assert_eq!(t.client.is_paused(), true);
+
+    // Non-admin cannot unpause
+    assert_eq!(t.client.try_unpause(&non_admin), Err(Ok(expected_err)));
+
+    // Admin can unpause
+    t.client.unpause(&t.admin);
+    assert_eq!(t.client.is_paused(), false);
+}
+
+#[test]
+fn test_creditline_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries() {
+    let t = RealIntegrationCtx::setup();
+    let provider = Address::generate(&t.env);
+    let user = Address::generate(&t.env);
+    let vendor = Address::generate(&t.env);
+
+    t.fund_pool(&provider, 10_000);
+    t.register_vendor(&vendor, "Pause Vendor");
+    t.set_score(&user, 60);
+    t.mint(&user, 5_000);
+
+    let now = t.env.ledger().timestamp();
+    let schedule = t.single_installment(1_000, now + 10_000);
+    let loan_id =
+        t.creditline
+            .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    let pending_id =
+        t.creditline
+            .request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
+
+    // Admin pauses creditline contract
+    t.creditline.pause(&t.admin);
+    assert_eq!(t.creditline.is_paused(), true);
+
+    let expected_paused_err = soroban_sdk::Error::from_contract_error(CreditLineError::ContractPaused as u32);
+
+    // Mutating functions blocked with ContractPaused
+    assert_eq!(
+        t.creditline.try_create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_approve_loan(&pending_id),
+        Err(Ok(expected_paused_err))
+    );
+    assert_eq!(
+        t.creditline.try_cancel_loan(&user, &pending_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_mark_defaulted(&loan_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+    assert_eq!(
+        t.creditline.try_warn_grace_period(&loan_id),
+        Err(Ok(CreditLineError::ContractPaused))
+    );
+
+    // Repayment Exception Policy: repay_loan and repay_installment are NOT blocked by pause
+    t.mint(&user, 500);
+    assert!(t.creditline.try_repay_loan(&user, &loan_id, &500).is_ok());
+    assert!(t.creditline.try_repay_installment(&user, &loan_id, &0, &500).is_ok());
+
+    // Query functions work fine while paused
+    assert_eq!(t.creditline.get_loan(&loan_id).loan_id, loan_id);
+    assert_eq!(t.creditline.get_user_loans(&user, &0, &10).len(), 2);
+    assert_eq!(t.creditline.get_admin(), t.admin);
+    assert_eq!(t.creditline.get_version(), 1);
+
+    // Unpause restores operations
+    t.creditline.unpause(&t.admin);
+    assert_eq!(t.creditline.is_paused(), false);
 }

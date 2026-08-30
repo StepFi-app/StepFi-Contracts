@@ -188,6 +188,7 @@ impl ParametersContract {
             ProposalAction::SetAdmin(a) => Self::do_set_admin(&env, &a),
             ProposalAction::Upgrade(h) => Self::do_upgrade(&env, h),
             ProposalAction::UpdateSigners(c) => Self::do_update_signers(&env, &c, proposal.id),
+            ProposalAction::SetLateFeeBps(b) => Self::do_set_late_fee_bps(&env, b),
         }
 
         proposal.executed = true;

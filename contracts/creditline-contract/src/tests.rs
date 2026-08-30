@@ -2576,7 +2576,7 @@ impl RealIntegrationCtx {
         reputation.set_updater(&admin, &creditline_id, &true);
 
         vendor_registry.initialize(&admin);
-        pool.initialize(&admin, &token_address, &treasury, &vendor_fund);
+        pool.initialize(&admin, &token_address, &treasury, &vendor_fund, &None);
         pool.set_creditline(&admin, &creditline_id);
         parameters.initialize_defaults(&admin);
 
@@ -4228,7 +4228,7 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     let treasury = Address::generate(&env);
     let merchant_fund = Address::generate(&env);
 
-    lp_client.initialize(&admin, &token_id, &treasury, &merchant_fund);
+    lp_client.initialize(&admin, &token_id, &treasury, &merchant_fund, &None);
 
     // Register reputation mock
     let rep_id = env.register(MockReputation, ());

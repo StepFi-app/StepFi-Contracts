@@ -4,6 +4,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, IntoVal,
 };
+use vendor_registry_contract::{VendorRegistryContract, VendorRegistryContractClient};
 
 // ΓöÇΓöÇΓöÇ helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
@@ -45,8 +46,8 @@ impl TestEnv {
         let merchant_fund = Address::generate(&env);
         let creditline = Address::generate(&env);
 
-        // Initialize pool
-        client.initialize(&admin, &token_address, &treasury, &merchant_fund);
+        // Initialize pool (no vendor registry configured by default)
+        client.initialize(&admin, &token_address, &treasury, &merchant_fund, &None);
         client.set_creditline(&admin, &creditline);
 
         // Mint tokens into some standard accounts for tests to use
@@ -102,6 +103,7 @@ fn test_initialize_twice_fails() {
         &t.token.address,
         &t.treasury,
         &t.merchant_fund,
+        &None,
     );
 }
 
@@ -3044,4 +3046,322 @@ fn test_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries(
     t.client.unpause(&t.admin);
     assert_eq!(t.client.is_paused(), false);
     assert!(t.client.deposit(&provider, &1_000) > 0);
+}
+
+// ΓöÇΓöÇΓöÇ issue #106: per-ledger outflow cap, merchant exposure cap, vendor validation
+// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+/// Deploy a real VendorRegistryContract, initialize it with `admin`, and wire
+/// it into the liquidity pool. Returns the registry client for vendor ops.
+fn setup_vendor_registry(t: &TestEnv) -> VendorRegistryContractClient {
+    let registry_id = t.env.register(VendorRegistryContract, ());
+    let registry = VendorRegistryContractClient::new(&t.env, &registry_id);
+    registry.initialize(&t.admin);
+    t.client.set_vendor_registry(&t.admin, &Some(registry_id));
+    registry
+}
+
+fn approve_vendor(registry: &VendorRegistryContractClient, admin: &Address, vendor: &Address) {
+    let name = soroban_sdk::String::from_str(&registry.env, "Test Vendor");
+    registry.register_vendor(admin, vendor, &name);
+    registry.approve_vendor(admin, vendor);
+}
+
+// ΓöÇΓöÇΓöÇ per-ledger outflow cap ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+#[test]
+fn test_outflow_cap_disabled_by_default() {
+    // Backward compatibility: caps default to disabled, so honest single-loop
+    // funding is unaffected by the new guards.
+    let t = TestEnv::setup();
+    assert_eq!(t.client.get_outflow_cap_bps(), 0);
+    assert_eq!(t.client.get_merchant_exposure_cap(), 0);
+
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    // Multiple fund_loan calls in the same ledger still succeed (legacy).
+    t.client.fund_loan(&t.creditline, &merchant, &400);
+    t.client.fund_loan(&t.creditline, &merchant, &400);
+    assert_eq!(t.client.get_pool_stats().locked_liquidity, 800);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #19)")]
+fn test_set_outflow_cap_invalid_bps_fails() {
+    let t = TestEnv::setup();
+    t.client.set_outflow_cap_bps(&t.admin, &10_001);
+}
+
+#[test]
+fn test_set_outflow_cap_by_non_admin_fails() {
+    let t = TestEnv::setup();
+    let non_admin = Address::generate(&t.env);
+    let expected_err =
+        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    assert_eq!(
+        t.client.try_set_outflow_cap_bps(&non_admin, &5_000),
+        Err(Ok(expected_err))
+    );
+    assert_eq!(t.client.get_outflow_cap_bps(), 0);
+}
+
+#[test]
+fn test_outflow_cap_enforced_within_ledger() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    let merchant2 = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    // 5000 BPS = 50% of available liquidity per ledger.
+    t.client.set_outflow_cap_bps(&t.admin, &5_000);
+    assert_eq!(t.client.get_outflow_cap_bps(), 5_000);
+
+    // Exactly at the computed cap (50% of 1000 available = 500) is allowed.
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    assert_eq!(t.client.get_pool_stats().locked_liquidity, 500);
+
+    // A second funding in the same ledger pushes used beyond the cap.
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant2, &200),
+        Err(Ok(LiquidityPoolError::OutflowCapExceeded))
+    );
+}
+
+#[test]
+fn test_outflow_cap_window_resets_on_new_ledger() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    t.client.set_outflow_cap_bps(&t.admin, &5_000);
+
+    // Ledger N: fund 500 (= cap), fills the window.
+    let ledger_seq = t.env.ledger().sequence();
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &200),
+        Err(Ok(LiquidityPoolError::OutflowCapExceeded))
+    );
+
+    // Ledger N+10: the window rolls — the used counter resets. available is
+    // now 500, so the new cap is 250 (50%).
+    t.env.ledger().set_sequence_number(ledger_seq + 10);
+    t.client.fund_loan(&t.creditline, &merchant, &200);
+    assert_eq!(t.client.get_pool_stats().locked_liquidity, 700);
+
+    // And the fresh window is enforced again.
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &200),
+        Err(Ok(LiquidityPoolError::OutflowCapExceeded))
+    );
+}
+
+// ΓöÇΓöÇΓöÇ single-recipient (merchant) exposure cap ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+#[test]
+#[should_panic(expected = "Error(Contract, #19)")]
+fn test_set_merchant_exposure_cap_negative_fails() {
+    let t = TestEnv::setup();
+    t.client.set_merchant_exposure_cap(&t.admin, &-1);
+}
+
+#[test]
+fn test_set_merchant_exposure_cap_by_non_admin_fails() {
+    let t = TestEnv::setup();
+    let non_admin = Address::generate(&t.env);
+    let expected_err =
+        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    assert_eq!(
+        t.client.try_set_merchant_exposure_cap(&non_admin, &5_000),
+        Err(Ok(expected_err))
+    );
+}
+
+#[test]
+fn test_merchant_exposure_cap_enforced_per_recipient() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant_a = Address::generate(&t.env);
+    let merchant_b = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.set_merchant_exposure_cap(&t.admin, &2_500);
+
+    t.client.fund_loan(&t.creditline, &merchant_a, &2_000);
+    assert_eq!(t.client.get_merchant_funded(&merchant_a), 2_000);
+
+    // Cumulative exposure to A exceeds the ceiling.
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant_a, &600),
+        Err(Ok(LiquidityPoolError::MerchantExposureCapExceeded))
+    );
+
+    // A different recipient has its own independent ceiling.
+    t.client.fund_loan(&t.creditline, &merchant_b, &2_000);
+    assert_eq!(t.client.get_merchant_funded(&merchant_a), 2_000);
+    assert_eq!(t.client.get_merchant_funded(&merchant_b), 2_000);
+
+    // The rejected call was reverted — locked only reflects the two successes.
+    assert_eq!(t.client.get_pool_stats().locked_liquidity, 4_000);
+}
+
+#[test]
+fn test_merchant_exposure_tracked_even_when_cap_disabled() {
+    // Exposure accounting is kept regardless so admins can monitor `get_merchant_funded`
+    // before choosing to enable the cap.
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    assert_eq!(t.client.get_merchant_exposure_cap(), 0);
+    t.client.fund_loan(&t.creditline, &merchant, &1_000);
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    assert_eq!(t.client.get_merchant_funded(&merchant), 1_500);
+}
+
+// ΓöÇΓöÇΓöÇ optional vendor-registry cross-check ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+#[test]
+fn test_vendor_registry_none_by_default() {
+    let t = TestEnv::setup();
+    assert!(t.client.get_vendor_registry().is_none());
+
+    // Arbitrary recipient is payable while no registry is configured.
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+    t.client.fund_loan(&t.creditline, &merchant, &100);
+    assert_eq!(t.client.get_merchant_funded(&merchant), 100);
+}
+
+#[test]
+fn test_vendor_registry_blocks_unregistered_merchant() {
+    let t = TestEnv::setup();
+    let registry = setup_vendor_registry(&t);
+    assert_eq!(t.client.get_vendor_registry(), Some(registry.address.clone()));
+
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    // Merchant was never registered/approved → funding is rejected.
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &500),
+        Err(Ok(LiquidityPoolError::VendorNotActive))
+    );
+}
+
+#[test]
+fn test_vendor_registry_allows_approved_merchant() {
+    let t = TestEnv::setup();
+    let registry = setup_vendor_registry(&t);
+
+    let merchant = Address::generate(&t.env);
+    approve_vendor(&registry, &t.admin, &merchant);
+    assert!(registry.is_active(&merchant));
+
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    assert_eq!(t.client.get_merchant_funded(&merchant), 500);
+}
+
+#[test]
+fn test_vendor_registry_blocks_suspended_merchant() {
+    let t = TestEnv::setup();
+    let registry = setup_vendor_registry(&t);
+
+    let merchant = Address::generate(&t.env);
+    approve_vendor(&registry, &t.admin, &merchant);
+    registry.suspend_vendor(&t.admin, &merchant);
+    assert!(!registry.is_active(&merchant));
+
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &500),
+        Err(Ok(LiquidityPoolError::VendorNotActive))
+    );
+}
+
+#[test]
+fn test_vendor_registry_cleared_restores_legacy_behavior() {
+    let t = TestEnv::setup();
+    let registry = setup_vendor_registry(&t);
+
+    let merchant = Address::generate(&t.env);
+    let provider = Address::generate(&t.env);
+    t.mint(&provider, 10_000);
+    t.client.deposit(&provider, &10_000);
+
+    // Blocked while registry configured.
+    assert_eq!(
+        t.client.try_fund_loan(&t.creditline, &merchant, &500),
+        Err(Ok(LiquidityPoolError::VendorNotActive))
+    );
+
+    // Admin clears the registry → unvalidated recipients payable again.
+    t.client.set_vendor_registry(&t.admin, &None);
+    assert!(t.client.get_vendor_registry().is_none());
+    t.client.fund_loan(&t.creditline, &merchant, &500);
+    assert_eq!(t.client.get_merchant_funded(&merchant), 500);
+}
+
+#[test]
+fn test_set_vendor_registry_by_non_admin_fails() {
+    let t = TestEnv::setup();
+    let non_admin = Address::generate(&t.env);
+    let registry_id = t.env.register(VendorRegistryContract, ());
+    let expected_err =
+        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    assert_eq!(
+        t.client.try_set_vendor_registry(&non_admin, &Some(registry_id)),
+        Err(Ok(expected_err))
+    );
+}
+
+#[test]
+fn test_loan_funded_event_carries_recipient_and_remaining_caps() {
+    let t = TestEnv::setup();
+    let provider = Address::generate(&t.env);
+    let merchant = Address::generate(&t.env);
+    t.mint(&provider, 1_000);
+    t.client.deposit(&provider, &1_000);
+
+    t.client.set_outflow_cap_bps(&t.admin, &5_000);
+    t.client.set_merchant_exposure_cap(&t.admin, &2_000);
+
+    t.client.fund_loan(&t.creditline, &merchant, &300);
+
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
+    let expected_sym = soroban_sdk::Symbol::new(&t.env, "LQFUND");
+    let mut found = false;
+    for e in events.iter() {
+        let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
+        if topic == expected_sym {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "LQFUND event with remaining caps not found");
 }

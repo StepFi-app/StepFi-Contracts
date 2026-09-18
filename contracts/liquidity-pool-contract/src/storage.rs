@@ -184,7 +184,9 @@ pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, LiquidityPo
 }
 
 pub fn set_parameters_contract(env: &Env, address: &Address) {
-    env.storage().instance().set(&PARAMETERS_CONTRACT_KEY, address);
+    env.storage()
+        .instance()
+        .set(&PARAMETERS_CONTRACT_KEY, address);
 }
 
 // --- Paused State ---
@@ -227,7 +229,9 @@ pub fn get_merchant_exposure_cap(env: &Env) -> i128 {
 }
 
 pub fn set_merchant_exposure_cap(env: &Env, amount: i128) {
-    env.storage().instance().set(&MERCHANT_EXPOSURE_CAP_KEY, &amount);
+    env.storage()
+        .instance()
+        .set(&MERCHANT_EXPOSURE_CAP_KEY, &amount);
 }
 
 // --- Optional Vendor Registry (instance) ---
@@ -257,11 +261,7 @@ pub const OUTFLOW_USED_KEY: Symbol = symbol_short!("LEDOUT");
 /// `fund_loan` on a new ledger sequence resets the used counter to zero.
 pub fn get_outflow_window(env: &Env) -> (u32, i128) {
     let seq: u32 = env.storage().instance().get(&OUTFLOW_SEQ_KEY).unwrap_or(0);
-    let used: i128 = env
-        .storage()
-        .instance()
-        .get(&OUTFLOW_USED_KEY)
-        .unwrap_or(0);
+    let used: i128 = env.storage().instance().get(&OUTFLOW_USED_KEY).unwrap_or(0);
     (seq, used)
 }
 

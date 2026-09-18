@@ -74,7 +74,8 @@ pub fn emit_interest_distributed(
 
 /// Emitted when a principal shortfall is absorbed from a defaulted loan
 pub fn emit_loss_absorbed(env: &Env, creditline: &Address, principal_shortfall: i128) {
-    env.events().publish((LOSS_ABSORBED, creditline), principal_shortfall);
+    env.events()
+        .publish((LOSS_ABSORBED, creditline), principal_shortfall);
 }
 
 pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32) {
@@ -97,17 +98,13 @@ pub fn emit_upgrade_proposed(
 }
 
 pub fn emit_paused(env: &Env, admin: &Address) {
-    env.events().publish(
-        (symbol_short!("PAUSED"), admin),
-        env.ledger().timestamp(),
-    );
+    env.events()
+        .publish((symbol_short!("PAUSED"), admin), env.ledger().timestamp());
 }
 
 pub fn emit_unpaused(env: &Env, admin: &Address) {
-    env.events().publish(
-        (symbol_short!("UNPAUSED"), admin),
-        env.ledger().timestamp(),
-    );
+    env.events()
+        .publish((symbol_short!("UNPAUSED"), admin), env.ledger().timestamp());
 }
 
 const CAPS_UPDATED: Symbol = symbol_short!("CAPSUPD");

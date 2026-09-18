@@ -21,6 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -32,6 +33,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'contracts/**/*.rs', 'contracts/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all --check
 
       # creditline-contract embeds the four dependency WASMs via
       # soroban_sdk::contractimport!, so those WASMs must exist before
@@ -48,6 +52,11 @@ jobs:
             -p parameters-contract
           cargo build --locked --target wasm32-unknown-unknown --release \
             -p vouching-contract
+
+      # Lint after the dependency WASMs exist so creditline-contract's
+      # contractimport! clients resolve during the native clippy compile.
+      - name: Clippy (lint gate)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Build all contracts
         run: |

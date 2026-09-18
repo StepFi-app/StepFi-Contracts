@@ -6,9 +6,7 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
-use crate::{
-    VouchingContract, VouchingContractClient, DEFAULT_VOUCH_BOOST, VOUCH_DURATION,
-};
+use crate::{VouchingContract, VouchingContractClient, DEFAULT_VOUCH_BOOST, VOUCH_DURATION};
 
 #[contract]
 pub struct MockReputationContract;
@@ -332,10 +330,10 @@ fn test_boost_removal_clamped_to_baseline() {
 
     // Seed pre-existing reputation so the vouch baseline is non-zero.
     ctx.env.as_contract(&ctx.reputation, || {
-        ctx.env.storage().instance().set(
-            &(symbol_short!("SCORE"), ctx.learner.clone()),
-            &20u32,
-        );
+        ctx.env
+            .storage()
+            .instance()
+            .set(&(symbol_short!("SCORE"), ctx.learner.clone()), &20u32);
     });
 
     ctx.env.ledger().with_mut(|l| l.timestamp = 1_000_000);
@@ -597,13 +595,20 @@ fn test_upgrade_bumps_version_and_emits_event() {
 
     assert_eq!(ctx.client.get_version(), 1u32);
 
-    let wasm_hash = ctx.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
-        &ctx.env,
-        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
-    ));
+    let wasm_hash = ctx
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &ctx.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     ctx.client.upgrade(&wasm_hash);
 
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = ctx.env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = ctx.env.events().all();
     let mut found = false;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&ctx.env);

@@ -292,11 +292,13 @@ impl ReputationContract {
     fn get_upgrade_delay_seconds(env: &Env) -> u64 {
         use soroban_sdk::IntoVal;
         if let Ok(Some(params_addr)) = storage::get_parameters_contract(env) {
-            if let Ok(Ok(params)) = env.try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
-                &params_addr,
-                &soroban_sdk::Symbol::new(env, "get_parameters"),
-                ().into_val(env),
-            ) {
+            if let Ok(Ok(params)) = env
+                .try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
+                    &params_addr,
+                    &soroban_sdk::Symbol::new(env, "get_parameters"),
+                    ().into_val(env),
+                )
+            {
                 if params.upgrade_delay_seconds > 0 {
                     return params.upgrade_delay_seconds;
                 }

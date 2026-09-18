@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, IntoVal, String, Val, Vec,
+    Address, Env, IntoVal, String,
 };
 
 /// Helper function to set up the environment, contract, and test addresses.
@@ -465,15 +465,21 @@ fn test_admin_upgrade_increments_version_and_emits_event() {
     env.mock_all_auths();
 
     assert_eq!(client.get_version(), 1u32);
-    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
-        &env,
-        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
-    ));
+    let wasm_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     client.propose_upgrade(&wasm_hash);
     env.ledger().set_timestamp(86_401);
     client.execute_upgrade(&wasm_hash);
 
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = env.events().all();
     let mut found = false;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&env);
@@ -566,7 +572,12 @@ fn test_vendor_registry_upgrade_delay_parameterized_via_parameters_contract() {
 
     // Advance past custom 2-day delay (172,801s)
     env.ledger().set_timestamp(172_801);
-    let wasm_real = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_real = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     client.propose_upgrade(&wasm_real);
     env.ledger().set_timestamp(172_801 + 172_801);
     client.execute_upgrade(&wasm_real);

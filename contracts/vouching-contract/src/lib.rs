@@ -131,7 +131,7 @@ impl VouchingContract {
         }
 
         let now = env.ledger().timestamp();
-        let expiry = record.ts.checked_add(VOUCH_DURATION).unwrap_or(u64::MAX);
+        let expiry = record.ts.saturating_add(VOUCH_DURATION);
         if expiry >= now {
             panic_with_error!(&env, VouchingError::VouchNotExpired);
         }
@@ -155,9 +155,7 @@ impl VouchingContract {
             if let Ok(mut record) = storage::get_vouch(&env, &mentor, &learner) {
                 // A vouch whose TTL has elapsed is expired regardless of what
                 // storage says, so readers never observe a stale active boost.
-                if record.active
-                    && record.ts.checked_add(VOUCH_DURATION).unwrap_or(u64::MAX) < now
-                {
+                if record.active && record.ts.saturating_add(VOUCH_DURATION) < now {
                     record.active = false;
                 }
                 records.push_back(record);
@@ -176,8 +174,7 @@ impl VouchingContract {
     }
 
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         admin.require_auth();
 
         Self::enter_non_reentrant(&env);

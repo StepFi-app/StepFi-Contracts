@@ -443,16 +443,23 @@ fn test_admin_upgrade_bumps_version() {
     // default version should be 1
     assert_eq!(t.client.get_version(), 1u32);
 
-    let wasm_hash = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
-        &t.env,
-        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
-    ));
+    let wasm_hash = t
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &t.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     t.client.propose_upgrade(&wasm_hash);
     t.env.ledger().set_timestamp(86_401);
     t.client.execute_upgrade(&wasm_hash);
 
     // event observed
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
     let mut found = false;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
@@ -986,7 +993,8 @@ fn test_withdrawal_with_active_loans() {
     assert_eq!(loan_stats.total_shares, expected_initial_shares);
 
     // 5. Calculate max withdrawable shares (limited by provider ownership)
-    let max_withdrawable_shares = (loan_stats.available_liquidity * loan_stats.total_shares) / loan_stats.total_liquidity;
+    let max_withdrawable_shares =
+        (loan_stats.available_liquidity * loan_stats.total_shares) / loan_stats.total_liquidity;
     assert!(max_withdrawable_shares >= withdrawal_shares);
 
     // 6. Withdraw up to available amount - this should succeed
@@ -2760,14 +2768,24 @@ fn test_timelocked_upgrade_success_bumps_version() {
     let t = TestEnv::setup();
     assert_eq!(t.client.get_version(), 1);
 
-    let wasm_hash = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&t.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_hash = t
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &t.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     t.client.propose_upgrade(&wasm_hash);
 
     // Advance past 1-day timelock delay (86,400 seconds)
     t.env.ledger().set_timestamp(86_401);
     t.client.execute_upgrade(&wasm_hash);
 
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = t.env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = t.env.events().all();
     let mut upgraded_new: Option<u32> = None;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&t.env);
@@ -2812,12 +2830,19 @@ fn test_upgrade_delay_parameterized_via_parameters_contract() {
     // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
     t.env.ledger().set_timestamp(86_401);
     let res = t.client.try_execute_upgrade(&wasm_hash);
-    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::UpgradeTimelockNotMet as u32);
+    let expected_err =
+        soroban_sdk::Error::from_contract_error(LiquidityPoolError::UpgradeTimelockNotMet as u32);
     assert_eq!(res, Err(Ok(expected_err)));
 
     // Advance past custom 2-day delay (172,801s)
     t.env.ledger().set_timestamp(172_801);
-    let wasm_real = t.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&t.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_real = t
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &t.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     t.client.propose_upgrade(&wasm_real);
     t.env.ledger().set_timestamp(172_801 + 172_801);
     t.client.execute_upgrade(&wasm_real);
@@ -2952,7 +2977,7 @@ fn test_post_default_deposit_does_not_brick() {
     // Near-zero proportional price, not 0 (would brick) and not 10000 (would hide loss)
     assert!(stats.share_price > 0 && stats.share_price < 10_000);
     assert_eq!(stats.share_price, 909); // (0+1000)*10000/11000
-    // Subsequent deposit must succeed and not divide-by-zero
+                                        // Subsequent deposit must succeed and not divide-by-zero
     let provider2 = Address::generate(&t.env);
     t.mint(&provider2, 1_000);
     let shares2 = t.client.deposit(&provider2, &1_000);
@@ -2970,7 +2995,7 @@ fn test_pause_unpause_requires_admin() {
     let t = TestEnv::setup();
     let non_admin = Address::generate(&t.env);
 
-    assert_eq!(t.client.is_paused(), false);
+    assert!(!t.client.is_paused());
 
     // Non-admin cannot pause
     let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
@@ -2978,14 +3003,14 @@ fn test_pause_unpause_requires_admin() {
 
     // Admin can pause
     t.client.pause(&t.admin);
-    assert_eq!(t.client.is_paused(), true);
+    assert!(t.client.is_paused());
 
     // Non-admin cannot unpause
     assert_eq!(t.client.try_unpause(&non_admin), Err(Ok(expected_err)));
 
     // Admin can unpause
     t.client.unpause(&t.admin);
-    assert_eq!(t.client.is_paused(), false);
+    assert!(!t.client.is_paused());
 }
 
 #[test]
@@ -2998,7 +3023,7 @@ fn test_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries(
     let shares = t.client.deposit(&provider, &5_000);
 
     t.client.pause(&t.admin);
-    assert_eq!(t.client.is_paused(), true);
+    assert!(t.client.is_paused());
 
     // Mutating functions blocked with ContractPaused
     assert_eq!(
@@ -3044,7 +3069,7 @@ fn test_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries(
 
     // Unpause restores operations
     t.client.unpause(&t.admin);
-    assert_eq!(t.client.is_paused(), false);
+    assert!(!t.client.is_paused());
     assert!(t.client.deposit(&provider, &1_000) > 0);
 }
 
@@ -3053,7 +3078,7 @@ fn test_paused_state_blocks_mutating_functions_and_allows_repayment_and_queries(
 
 /// Deploy a real VendorRegistryContract, initialize it with `admin`, and wire
 /// it into the liquidity pool. Returns the registry client for vendor ops.
-fn setup_vendor_registry(t: &TestEnv) -> VendorRegistryContractClient {
+fn setup_vendor_registry(t: &TestEnv) -> VendorRegistryContractClient<'_> {
     let registry_id = t.env.register(VendorRegistryContract, ());
     let registry = VendorRegistryContractClient::new(&t.env, &registry_id);
     registry.initialize(&t.admin);
@@ -3099,8 +3124,7 @@ fn test_set_outflow_cap_invalid_bps_fails() {
 fn test_set_outflow_cap_by_non_admin_fails() {
     let t = TestEnv::setup();
     let non_admin = Address::generate(&t.env);
-    let expected_err =
-        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
     assert_eq!(
         t.client.try_set_outflow_cap_bps(&non_admin, &5_000),
         Err(Ok(expected_err))
@@ -3176,8 +3200,7 @@ fn test_set_merchant_exposure_cap_negative_fails() {
 fn test_set_merchant_exposure_cap_by_non_admin_fails() {
     let t = TestEnv::setup();
     let non_admin = Address::generate(&t.env);
-    let expected_err =
-        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
     assert_eq!(
         t.client.try_set_merchant_exposure_cap(&non_admin, &5_000),
         Err(Ok(expected_err))
@@ -3249,7 +3272,10 @@ fn test_vendor_registry_none_by_default() {
 fn test_vendor_registry_blocks_unregistered_merchant() {
     let t = TestEnv::setup();
     let registry = setup_vendor_registry(&t);
-    assert_eq!(t.client.get_vendor_registry(), Some(registry.address.clone()));
+    assert_eq!(
+        t.client.get_vendor_registry(),
+        Some(registry.address.clone())
+    );
 
     let provider = Address::generate(&t.env);
     let merchant = Address::generate(&t.env);
@@ -3303,7 +3329,7 @@ fn test_vendor_registry_blocks_suspended_merchant() {
 #[test]
 fn test_vendor_registry_cleared_restores_legacy_behavior() {
     let t = TestEnv::setup();
-    let registry = setup_vendor_registry(&t);
+    let _registry = setup_vendor_registry(&t);
 
     let merchant = Address::generate(&t.env);
     let provider = Address::generate(&t.env);
@@ -3328,10 +3354,10 @@ fn test_set_vendor_registry_by_non_admin_fails() {
     let t = TestEnv::setup();
     let non_admin = Address::generate(&t.env);
     let registry_id = t.env.register(VendorRegistryContract, ());
-    let expected_err =
-        soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
+    let expected_err = soroban_sdk::Error::from_contract_error(LiquidityPoolError::NotAdmin as u32);
     assert_eq!(
-        t.client.try_set_vendor_registry(&non_admin, &Some(registry_id)),
+        t.client
+            .try_set_vendor_registry(&non_admin, &Some(registry_id)),
         Err(Ok(expected_err))
     );
 }

@@ -3,14 +3,11 @@
 mod access;
 mod errors;
 mod events;
-mod safe_math;
 mod storage;
 mod types;
 
 pub use errors::ParametersError;
-pub use types::{
-    default_parameters, MultisigConfig, Proposal, ProposalAction, ProtocolParameters,
-};
+pub use types::{default_parameters, MultisigConfig, Proposal, ProposalAction, ProtocolParameters};
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Vec};
 
@@ -131,8 +128,8 @@ impl ParametersContract {
         signer.require_auth();
         access::require_signer(&env, &signer);
 
-        let mut proposal =
-            storage::get_proposal(&env, proposal_id).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
         if proposal.executed {
             panic_with_error!(&env, ParametersError::ProposalAlreadyExecuted);
@@ -161,8 +158,8 @@ impl ParametersContract {
     /// eligible approvals. Permissionless — the collected approvals are the
     /// authorization.
     pub fn execute(env: Env, proposal_id: u64) {
-        let mut proposal =
-            storage::get_proposal(&env, proposal_id).unwrap_or_else(|err| panic_with_error!(&env, err));
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .unwrap_or_else(|err| panic_with_error!(&env, err));
 
         if proposal.executed {
             panic_with_error!(&env, ParametersError::ProposalAlreadyExecuted);
@@ -201,7 +198,6 @@ impl ParametersContract {
         storage::get_proposal(&env, proposal_id)
     }
 
-
     pub fn get_admin(env: Env) -> Result<Address, ParametersError> {
         storage::get_admin(&env)
     }
@@ -213,7 +209,6 @@ impl ParametersContract {
     pub fn get_parameters(env: Env) -> Result<ProtocolParameters, ParametersError> {
         storage::get_parameters(&env)
     }
-
 
     fn do_update_parameters(env: &Env, params: &ProtocolParameters) {
         Self::validate_parameters(env, params);
@@ -294,7 +289,8 @@ impl ParametersContract {
     }
 
     fn do_set_late_fee_bps(env: &Env, bps: u32) {
-        let mut params = storage::get_parameters(env).unwrap_or_else(|err| panic_with_error!(env, err));
+        let mut params =
+            storage::get_parameters(env).unwrap_or_else(|err| panic_with_error!(env, err));
         params.late_fee_bps = bps;
         let admin = storage::get_admin(env).unwrap_or_else(|err| panic_with_error!(env, err));
         storage::set_parameters(env, &params);

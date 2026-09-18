@@ -41,7 +41,6 @@ pub fn emit_loan_funded(
     );
 }
 
-
 /// Emit a loan created event
 pub fn emit_loan_created(
     env: &Env,
@@ -180,19 +179,10 @@ pub fn emit_loan_in_grace_period(
 }
 
 /// Emitted when a late fee is collected as part of `repay_installment`.
-pub fn emit_late_fee_paid(
-    env: &Env,
-    loan_id: u64,
-    installment_index: u32,
-    fee_amount: i128,
-) {
+pub fn emit_late_fee_paid(env: &Env, loan_id: u64, installment_index: u32, fee_amount: i128) {
     env.events().publish(
         (LATE_FEE_PAID, loan_id),
-        (
-            installment_index,
-            fee_amount,
-            env.ledger().timestamp(),
-        ),
+        (installment_index, fee_amount, env.ledger().timestamp()),
     );
 }
 
@@ -217,12 +207,7 @@ pub fn emit_upgrade_proposed(
 }
 
 /// Emit an event when a cross-contract reputation score update fails.
-pub fn emit_score_update_failed(
-    env: &Env,
-    borrower: &Address,
-    is_increase: bool,
-    amount: u32,
-) {
+pub fn emit_score_update_failed(env: &Env, borrower: &Address, is_increase: bool, amount: u32) {
     env.events().publish(
         (Symbol::new(env, "ScoreUpdateFailed"), borrower.clone()),
         (is_increase, amount, env.ledger().timestamp()),

@@ -47,8 +47,11 @@ fn signer_update_action(signers: Vec<Address>, threshold: u32) -> ProposalAction
 }
 
 fn has_event(env: &Env, symbol: &str) -> bool {
-    let events: soroban_sdk::Vec<(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> =
-        env.events().all();
+    let events: soroban_sdk::Vec<(
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = env.events().all();
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(env);
         if topic == soroban_sdk::Symbol::new(env, symbol) {
@@ -362,10 +365,7 @@ fn test_update_signers_requires_elevated_quorum() {
 
     let n1 = Address::generate(&env);
     let n2 = Address::generate(&env);
-    let id = client.propose(
-        &s1,
-        &signer_update_action(vec![&env, n1, n2], 2),
-    );
+    let id = client.propose(&s1, &signer_update_action(vec![&env, n1, n2], 2));
     // s1 (proposer auto-approves) + s2 = 2 approvals, but signer changes in a
     // 2-of-3 set require threshold + 1 = 3.
     client.approve(&s2, &id);
@@ -405,10 +405,7 @@ fn test_signer_change_quorum_capped_at_full_committee_for_unanimous_set() {
 
     let n1 = Address::generate(&env);
     let n2 = Address::generate(&env);
-    let id = client.propose(
-        &s1,
-        &signer_update_action(vec![&env, n1, n2], 2),
-    );
+    let id = client.propose(&s1, &signer_update_action(vec![&env, n1, n2], 2));
     // 2-of-2 committee: elevated quorum min(2 + 1, 2) = 2 = unanimity. One
     // approval (the proposer) is not enough.
     assert!(client.try_execute(&id).is_err());
@@ -606,16 +603,21 @@ fn test_upgrade_via_proposal_increments_version() {
     let (env, client, _admin, s1, s2, _s3) = setup_multisig();
     assert_eq!(client.get_version(), 1u32);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(
-        &env,
-        include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
-    ));
+    let wasm_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
 
     let id = client.propose(&s1, &ProposalAction::Upgrade(wasm_hash));
     client.approve(&s2, &id);
     client.execute(&id);
 
-    assert!(has_event(&env, "CONTRACTUPGRADED"), "CONTRACTUPGRADED event not found");
+    assert!(
+        has_event(&env, "CONTRACTUPGRADED"),
+        "CONTRACTUPGRADED event not found"
+    );
 }
 
 #[test]

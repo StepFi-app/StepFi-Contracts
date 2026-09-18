@@ -107,7 +107,14 @@ impl CreditLineContract {
         storage::write_loan(&env, &loan);
 
         let pool_contribution = safe_math::sub_i128(total_amount, guarantee_amount)?;
-        Self::fund_loan_from_pool(&env, &user, &vendor, guarantee_amount, pool_contribution, true);
+        Self::fund_loan_from_pool(
+            &env,
+            &user,
+            &vendor,
+            guarantee_amount,
+            pool_contribution,
+            true,
+        );
 
         events::emit_loan_created(
             &env,
@@ -658,10 +665,7 @@ impl CreditLineContract {
                 &Symbol::new(&env, "decrease_score"),
                 (updater, loan.borrower.clone(), penalty).into_val(&env),
             );
-            let call_succeeded = match res {
-                Ok(Ok(())) => true,
-                _ => false,
-            };
+            let call_succeeded = matches!(res, Ok(Ok(())));
             if !call_succeeded {
                 events::emit_score_update_failed(&env, &loan.borrower, false, penalty);
                 panic_with_error!(&env, CreditLineError::ReputationCallFailed);
@@ -1175,10 +1179,7 @@ impl CreditLineContract {
             &Symbol::new(env, "increase_score"),
             (updater, borrower, score_increase).into_val(env),
         );
-        let call_succeeded = match res {
-            Ok(Ok(())) => true,
-            _ => false,
-        };
+        let call_succeeded = matches!(res, Ok(Ok(())));
         if !call_succeeded {
             events::emit_score_update_failed(env, borrower, true, score_increase);
             panic_with_error!(env, CreditLineError::ReputationCallFailed);
@@ -1240,8 +1241,7 @@ impl CreditLineContract {
 
         loan.late_fees_outstanding =
             safe_math::sub_i128(loan.late_fees_outstanding, late_fee_paid)?;
-        loan.interest_outstanding =
-            safe_math::sub_i128(loan.interest_outstanding, interest_paid)?;
+        loan.interest_outstanding = safe_math::sub_i128(loan.interest_outstanding, interest_paid)?;
         loan.service_fee_outstanding =
             safe_math::sub_i128(loan.service_fee_outstanding, service_fee_paid)?;
         loan.principal_outstanding =

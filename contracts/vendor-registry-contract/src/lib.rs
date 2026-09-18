@@ -3,7 +3,6 @@
 mod access;
 mod errors;
 mod events;
-mod safe_math;
 mod storage;
 mod types;
 
@@ -232,14 +231,16 @@ impl VendorRegistryContract {
     }
 
     pub fn set_parameters_contract(env: Env, address: Address) {
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
         storage::set_parameters_contract(&env, &address);
     }
 
     /// Propose a timelocked contract WASM upgrade — admin only
     pub fn propose_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
 
         let delay = Self::get_upgrade_delay_seconds(&env);
@@ -259,7 +260,8 @@ impl VendorRegistryContract {
 
     /// Execute a previously proposed and timelocked contract WASM upgrade — admin only
     pub fn execute_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        let admin = storage::get_admin(&env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
+        let admin = storage::get_admin(&env)
+            .unwrap_or_else(|err| soroban_sdk::panic_with_error!(&env, err));
         admin.require_auth();
 
         let pending = storage::get_pending_upgrade(&env)
@@ -296,11 +298,13 @@ impl VendorRegistryContract {
     fn get_upgrade_delay_seconds(env: &Env) -> u64 {
         use soroban_sdk::IntoVal;
         if let Ok(Some(params_addr)) = storage::get_parameters_contract(env) {
-            if let Ok(Ok(params)) = env.try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
-                &params_addr,
-                &soroban_sdk::Symbol::new(env, "get_parameters"),
-                ().into_val(env),
-            ) {
+            if let Ok(Ok(params)) = env
+                .try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
+                    &params_addr,
+                    &soroban_sdk::Symbol::new(env, "get_parameters"),
+                    ().into_val(env),
+                )
+            {
                 if params.upgrade_delay_seconds > 0 {
                     return params.upgrade_delay_seconds;
                 }

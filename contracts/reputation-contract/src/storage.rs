@@ -124,5 +124,7 @@ pub fn get_parameters_contract(env: &Env) -> Result<Option<Address>, ReputationE
 }
 
 pub fn set_parameters_contract(env: &Env, address: &Address) {
-    env.storage().instance().set(&PARAMETERS_CONTRACT_KEY, address);
+    env.storage()
+        .instance()
+        .set(&PARAMETERS_CONTRACT_KEY, address);
 }

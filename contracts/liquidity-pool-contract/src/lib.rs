@@ -224,8 +224,8 @@ impl LiquidityPoolContract {
 
         // Seed dead (unclaimable) shares on the very first deposit so a dust
         // depositor cannot own 100 % of a yield-bearing pool.
-        let total_shares = storage::get_total_shares(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let is_first_deposit = total_shares == 0;
 
         if is_first_deposit {
@@ -264,14 +264,14 @@ impl LiquidityPoolContract {
         storage::set_lp_shares(&env, &provider, new_shares);
 
         // Update total shares (includes dead shares)
-        let total_shares = storage::get_total_shares(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_shares =
+            storage::get_total_shares(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_total_shares = safe_math::add_i128(total_shares, shares_issued)?;
         storage::set_total_shares(&env, new_total_shares);
 
         // Update total liquidity
-        let total_liquidity = storage::get_total_liquidity(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err));
+        let total_liquidity =
+            storage::get_total_liquidity(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let new_total_liquidity = safe_math::add_i128(total_liquidity, amount)?;
         storage::set_total_liquidity(&env, new_total_liquidity);
 
@@ -378,8 +378,8 @@ impl LiquidityPoolContract {
         }
 
         // Optional vendor cross-check (skipped entirely when no registry set).
-        if let Some(registry) = storage::get_vendor_registry(&env)
-            .unwrap_or_else(|err| panic_with_error!(&env, err))
+        if let Some(registry) =
+            storage::get_vendor_registry(&env).unwrap_or_else(|err| panic_with_error!(&env, err))
         {
             if !Self::vendor_is_active(&env, &registry, &merchant) {
                 return Err(LiquidityPoolError::VendorNotActive);
@@ -612,7 +612,11 @@ impl LiquidityPoolContract {
         // any accounting change, so share price cannot rise without backing.
         let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&creditline, &env.current_contract_address(), &interest_amount);
+        token_client.transfer(
+            &creditline,
+            &env.current_contract_address(),
+            &interest_amount,
+        );
 
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
@@ -649,7 +653,11 @@ impl LiquidityPoolContract {
         // any accounting change, so share price cannot rise without backing.
         let token = storage::get_token(&env).unwrap_or_else(|err| panic_with_error!(&env, err));
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&creditline, &env.current_contract_address(), &interest_amount);
+        token_client.transfer(
+            &creditline,
+            &env.current_contract_address(),
+            &interest_amount,
+        );
 
         let res = Self::distribute_interest_internal(&env, interest_amount);
         Self::exit_non_reentrant(&env);
@@ -795,7 +803,8 @@ impl LiquidityPoolContract {
         if total_shares == 0 {
             return 0;
         }
-        let share_price = Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
+        let share_price =
+            Self::calculate_share_price_internal(&env).unwrap_or(types::SHARE_PRICE_PRECISION);
         safe_math::div_i128(
             safe_math::mul_i128(shares, share_price).unwrap_or(0),
             types::SHARE_PRICE_PRECISION,
@@ -876,11 +885,13 @@ impl LiquidityPoolContract {
     fn get_upgrade_delay_seconds(env: &Env) -> u64 {
         use soroban_sdk::IntoVal;
         if let Ok(Some(params_addr)) = storage::get_parameters_contract(env) {
-            if let Ok(Ok(params)) = env.try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
-                &params_addr,
-                &soroban_sdk::Symbol::new(env, "get_parameters"),
-                ().into_val(env),
-            ) {
+            if let Ok(Ok(params)) = env
+                .try_invoke_contract::<types::ProtocolParameters, soroban_sdk::Error>(
+                    &params_addr,
+                    &soroban_sdk::Symbol::new(env, "get_parameters"),
+                    ().into_val(env),
+                )
+            {
                 if params.upgrade_delay_seconds > 0 {
                     return params.upgrade_delay_seconds;
                 }

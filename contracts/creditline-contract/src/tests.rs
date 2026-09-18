@@ -72,17 +72,20 @@ impl MockLiquidityPool {
 
     pub fn fund_loan(env: Env, _creditline: Address, _vendor: Address, amount: i128) {
         env.storage().instance().set(&symbol_short!("FUND"), &true);
-        env.storage().instance().set(&symbol_short!("FNAMT"), &amount);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("FNAMT"), &amount);
     }
 
     pub fn receive_repayment(env: Env, _from: Address, amount: i128, fee: i128) {
         env.storage().instance().set(&symbol_short!("REPRD"), &true);
-        env.storage().instance().set(&symbol_short!("RPAMT"), &amount);
-        env.storage().instance().set(&symbol_short!("RPFEE"), &fee);
-    }    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
         env.storage()
             .instance()
-            .set(&symbol_short!("GUARD"), &true);
+            .set(&symbol_short!("RPAMT"), &amount);
+        env.storage().instance().set(&symbol_short!("RPFEE"), &fee);
+    }
+    pub fn receive_guarantee(env: Env, _from: Address, amount: i128) {
+        env.storage().instance().set(&symbol_short!("GUARD"), &true);
         env.storage()
             .instance()
             .set(&symbol_short!("GUAMT"), &amount);
@@ -98,16 +101,26 @@ impl MockLiquidityPool {
     }
 
     pub fn was_fund_loan_called(env: Env) -> bool {
-        env.storage().instance().get(&symbol_short!("FUND")).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&symbol_short!("FUND"))
+            .unwrap_or(false)
     }
 
     pub fn was_receive_repayment_called(env: Env) -> bool {
-        env.storage().instance().get(&symbol_short!("REPRD")).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&symbol_short!("REPRD"))
+            .unwrap_or(false)
     }
 
     pub fn was_receive_guarantee_called(env: Env) -> bool {
-        env.storage().instance().get(&symbol_short!("GUARD")).unwrap_or(false)
-    }    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("GUARD"))
+            .unwrap_or(false)
+    }
+    pub fn get_receive_guarantee_amount(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&symbol_short!("GUAMT"))
@@ -576,17 +589,28 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
     let vendor_registry_id = env.register(vendor_registry_contract::VendorRegistryContract, ());
     let lp_id = env.register(MockLiquidityPool, ());
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
 
     client.initialize(&admin, &rep_id, &vendor_registry_id, &lp_id, &token_id);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     client.propose_upgrade(&wasm_hash);
     env.ledger().set_timestamp(86_401);
     client.execute_upgrade(&wasm_hash);
 
     use soroban_sdk::IntoVal;
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
+    let events: soroban_sdk::Vec<(
+        soroban_sdk::Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    )> = env.events().all();
     let mut upgraded_new: Option<u32> = None;
     for e in events.iter() {
         let topic: soroban_sdk::Symbol = e.1.get_unchecked(0).into_val(&env);
@@ -596,7 +620,11 @@ fn test_admin_upgrade_succeeds_and_bumps_version() {
             break;
         }
     }
-    assert_eq!(upgraded_new, Some(2u32), "CONTRACTUPGRADED new_version should be 2");
+    assert_eq!(
+        upgraded_new,
+        Some(2u32),
+        "CONTRACTUPGRADED new_version should be 2"
+    );
 }
 
 #[test]
@@ -625,20 +653,6 @@ fn test_creditline_upgrade_with_wrong_hash_fails() {
     ctx.client.propose_upgrade(&wasm_hash1);
     ctx.env.ledger().set_timestamp(86_401);
     ctx.client.execute_upgrade(&wasm_hash2);
-}
-
-fn assert_event(env: &Env, expected: soroban_sdk::Symbol) {
-    use soroban_sdk::IntoVal;
-
-    let events: soroban_sdk::Vec<(soroban_sdk::Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env.events().all();
-    for event in events.iter() {
-        let topics = event.1.clone();
-        let topic: soroban_sdk::Symbol = topics.get_unchecked(0).into_val(env);
-        if topic == expected {
-            return;
-        }
-    }
-    panic!("expected event was not emitted");
 }
 
 #[test]
@@ -2143,7 +2157,12 @@ fn test_insufficient_liquidity_rejects_loan_creation() {
     let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
         &vendor_registry_id,
         &Symbol::new(&env, "register_vendor"),
-        (&admin, vendor.clone(), SorobanString::from_str(&env, "Test Vendor")).into_val(&env),
+        (
+            &admin,
+            vendor.clone(),
+            SorobanString::from_str(&env, "Test Vendor"),
+        )
+            .into_val(&env),
     );
     let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
         &vendor_registry_id,
@@ -2626,8 +2645,7 @@ impl RealIntegrationCtx {
         let vendor_name = SorobanString::from_str(&self.env, name);
         self.vendor_registry
             .register_vendor(&self.admin, vendor, &vendor_name);
-        self.vendor_registry
-            .approve_vendor(&self.admin, vendor);
+        self.vendor_registry.approve_vendor(&self.admin, vendor);
     }
 
     fn single_installment(
@@ -3247,9 +3265,7 @@ fn test_reputation_call_failure_reverts_default() {
             .create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard);
 
     // Advance time past grace period
-    t.env
-        .ledger()
-        .set_timestamp(now + 1_000 + 86_400 * 7 + 1);
+    t.env.ledger().set_timestamp(now + 1_000 + 86_400 * 7 + 1);
 
     // Revoke creditline updater permission on reputation contract
     t.reputation.set_updater(&t.admin, &t.creditline_id, &false);
@@ -3903,12 +3919,14 @@ fn test_waterfall_order_late_fees_paid_first() {
     let loan_id = t.create_default_loan(&user, &vendor);
 
     // Manually set late fees to simulate an overdue loan without time travel.
-    let mut loan = t.client.get_loan(&loan_id);
+    let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.late_fees_outstanding, 0);
 
     // We'll use apply_late_fees after advancing time.
     let due_date = loan.repayment_schedule.get(0).unwrap().due_date;
-    t.env.ledger().set_timestamp(due_date + crate::types::SECONDS_PER_DAY); // 1 day overdue
+    t.env
+        .ledger()
+        .set_timestamp(due_date + crate::types::SECONDS_PER_DAY); // 1 day overdue
     t.client.apply_late_fees(&loan_id);
 
     let loan = t.client.get_loan(&loan_id);
@@ -3923,8 +3941,14 @@ fn test_waterfall_order_late_fees_paid_first() {
     let loan = t.client.get_loan(&loan_id);
     // Late fees, interest, and service fee must be zero after payment.
     assert_eq!(loan.late_fees_outstanding, 0, "late fees paid first");
-    assert_eq!(loan.interest_outstanding, 0, "interest paid after late fees");
-    assert_eq!(loan.service_fee_outstanding, 0, "service fee paid after interest");
+    assert_eq!(
+        loan.interest_outstanding, 0,
+        "interest paid after late fees"
+    );
+    assert_eq!(
+        loan.service_fee_outstanding, 0,
+        "service fee paid after interest"
+    );
     // Only principal remains.
     assert_eq!(loan.principal_outstanding, DEFAULT_PRINCIPAL);
     assert_bucket_invariant(&t, loan_id);
@@ -3954,7 +3978,8 @@ fn test_waterfall_bucket_invariant_after_repay_loan() {
     // Full payment.
     let loan = t.client.get_loan(&loan_id);
     t.mint(&user, loan.remaining_balance);
-    t.client.repay_loan(&user, &loan_id, &loan.remaining_balance);
+    t.client
+        .repay_loan(&user, &loan_id, &loan.remaining_balance);
     assert_bucket_invariant(&t, loan_id);
 
     let loan = t.client.get_loan(&loan_id);
@@ -4017,7 +4042,8 @@ fn test_repay_installment_full_payment_sets_paid_and_buckets_zeroed() {
 
     t.mint(&user, DEFAULT_TOTAL_DUE);
     t.env.ledger().set_timestamp(5000);
-    t.client.repay_installment(&user, &loan_id, &0, &DEFAULT_TOTAL_DUE);
+    t.client
+        .repay_installment(&user, &loan_id, &0, &DEFAULT_TOTAL_DUE);
 
     let loan = t.client.get_loan(&loan_id);
     assert_eq!(loan.status, LoanStatus::Paid);
@@ -4055,7 +4081,8 @@ fn test_waterfall_bucket_invariant_after_repay_installment() {
     let loan = t.client.get_loan(&loan_id);
     t.mint(&user, loan.remaining_balance);
     t.env.ledger().set_timestamp(25000);
-    t.client.repay_installment(&user, &loan_id, &2, &loan.remaining_balance);
+    t.client
+        .repay_installment(&user, &loan_id, &2, &loan.remaining_balance);
     assert_bucket_invariant(&t, loan_id);
 
     let loan = t.client.get_loan(&loan_id);
@@ -4152,9 +4179,9 @@ fn test_mark_defaulted_zero_shortfall_skips_absorb_loss() {
     t.env.ledger().set_timestamp(1000);
     let schedule = t.single_installment(1000, 5000);
     t.mint(&user, 1000);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &1000, &1000, &schedule, &LoanType::Standard);
+    let loan_id =
+        t.client
+            .create_loan(&user, &vendor, &1000, &1000, &schedule, &LoanType::Standard);
 
     t.advance_past(5000);
     t.client.mark_defaulted(&loan_id);
@@ -4177,9 +4204,14 @@ fn test_mark_defaulted_absorb_loss_with_partial_repayment() {
     t.env.ledger().set_timestamp(1000);
     let schedule = t.single_installment(DEFAULT_TOTAL_DUE, 5000);
     t.mint(&user, DEFAULT_GUARANTEE);
-    let loan_id = t
-        .client
-        .create_loan(&user, &vendor, &DEFAULT_PRINCIPAL, &DEFAULT_GUARANTEE, &schedule, &LoanType::Standard);
+    let loan_id = t.client.create_loan(
+        &user,
+        &vendor,
+        &DEFAULT_PRINCIPAL,
+        &DEFAULT_GUARANTEE,
+        &schedule,
+        &LoanType::Standard,
+    );
 
     // Repay some of the loan: 500 out of 1050
     t.mint(&user, 500);
@@ -4222,7 +4254,8 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     let lp_client = LiquidityPoolContractClient::new(&env, &lp_id);
 
     // SAFETY: env outlives client — same pattern as other tests
-    let lp_client: LiquidityPoolContractClient<'static> = unsafe { core::mem::transmute(lp_client) };
+    let lp_client: LiquidityPoolContractClient<'static> =
+        unsafe { core::mem::transmute(lp_client) };
 
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
@@ -4255,6 +4288,7 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     lp_client.deposit(&lp, &10_000);
 
     let share_price_before = lp_client.get_pool_stats().share_price;
+    assert_eq!(share_price_before, 10_000);
 
     // Create and default a loan
     let user = Address::generate(&env);
@@ -4283,14 +4317,8 @@ fn test_mark_defaulted_loss_absorption_share_price_impact() {
     });
     token_sac.mint(&user, &200);
 
-    let loan_id = cl_client.create_loan(
-        &user,
-        &vendor,
-        &1000,
-        &200,
-        &schedule,
-        &LoanType::Standard,
-    );
+    let loan_id =
+        cl_client.create_loan(&user, &vendor, &1000, &200, &schedule, &LoanType::Standard);
 
     // Advance past due date and default
     env.ledger().set_timestamp(5001);
@@ -4345,12 +4373,19 @@ fn test_creditline_upgrade_delay_parameterized_via_parameters_contract() {
     // At 86,401s (1 day), execute_upgrade fails because custom delay is 172,800s
     ctx.env.ledger().set_timestamp(86_401);
     let res = ctx.client.try_execute_upgrade(&wasm_hash);
-    let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::UpgradeTimelockNotMet as u32);
+    let expected_err =
+        soroban_sdk::Error::from_contract_error(CreditLineError::UpgradeTimelockNotMet as u32);
     assert_eq!(res, Err(Ok(expected_err)));
 
     // Advance past custom 2-day delay (172,801s)
     ctx.env.ledger().set_timestamp(172_801);
-    let wasm_real = ctx.env.deployer().upload_contract_wasm(soroban_sdk::Bytes::from_slice(&ctx.env, include_bytes!("../../../contracts/test-fixtures/contract.wasm")));
+    let wasm_real = ctx
+        .env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(
+            &ctx.env,
+            include_bytes!("../../../contracts/test-fixtures/contract.wasm"),
+        ));
     ctx.client.propose_upgrade(&wasm_real);
     ctx.env.ledger().set_timestamp(172_801 + 172_801);
     ctx.client.execute_upgrade(&wasm_real);
@@ -4486,7 +4521,7 @@ fn test_creditline_pause_unpause_requires_admin() {
     let t = TestCtx::setup();
     let non_admin = Address::generate(&t.env);
 
-    assert_eq!(t.client.is_paused(), false);
+    assert!(!t.client.is_paused());
 
     // Non-admin cannot pause
     let expected_err = soroban_sdk::Error::from_contract_error(CreditLineError::NotAdmin as u32);
@@ -4494,14 +4529,14 @@ fn test_creditline_pause_unpause_requires_admin() {
 
     // Admin can pause
     t.client.pause(&t.admin);
-    assert_eq!(t.client.is_paused(), true);
+    assert!(t.client.is_paused());
 
     // Non-admin cannot unpause
     assert_eq!(t.client.try_unpause(&non_admin), Err(Ok(expected_err)));
 
     // Admin can unpause
     t.client.unpause(&t.admin);
-    assert_eq!(t.client.is_paused(), false);
+    assert!(!t.client.is_paused());
 }
 
 #[test]
@@ -4528,17 +4563,20 @@ fn test_creditline_paused_state_blocks_mutating_functions_and_allows_repayment_a
 
     // Admin pauses creditline contract
     t.creditline.pause(&t.admin);
-    assert_eq!(t.creditline.is_paused(), true);
+    assert!(t.creditline.is_paused());
 
-    let expected_paused_err = soroban_sdk::Error::from_contract_error(CreditLineError::ContractPaused as u32);
+    let expected_paused_err =
+        soroban_sdk::Error::from_contract_error(CreditLineError::ContractPaused as u32);
 
     // Mutating functions blocked with ContractPaused
     assert_eq!(
-        t.creditline.try_create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        t.creditline
+            .try_create_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
         Err(Ok(CreditLineError::ContractPaused))
     );
     assert_eq!(
-        t.creditline.try_request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
+        t.creditline
+            .try_request_loan(&user, &vendor, &1_000, &200, &schedule, &LoanType::Standard),
         Err(Ok(CreditLineError::ContractPaused))
     );
     assert_eq!(
@@ -4561,7 +4599,10 @@ fn test_creditline_paused_state_blocks_mutating_functions_and_allows_repayment_a
     // Repayment Exception Policy: repay_loan and repay_installment are NOT blocked by pause
     t.mint(&user, 500);
     assert!(t.creditline.try_repay_loan(&user, &loan_id, &500).is_ok());
-    assert!(t.creditline.try_repay_installment(&user, &loan_id, &0, &500).is_ok());
+    assert!(t
+        .creditline
+        .try_repay_installment(&user, &loan_id, &0, &500)
+        .is_ok());
 
     // Query functions work fine while paused
     assert_eq!(t.creditline.get_loan(&loan_id).loan_id, loan_id);
@@ -4571,5 +4612,5 @@ fn test_creditline_paused_state_blocks_mutating_functions_and_allows_repayment_a
 
     // Unpause restores operations
     t.creditline.unpause(&t.admin);
-    assert_eq!(t.creditline.is_paused(), false);
+    assert!(!t.creditline.is_paused());
 }

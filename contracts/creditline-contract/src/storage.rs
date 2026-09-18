@@ -90,6 +90,7 @@ pub fn get_user_loan_count(env: &Env, borrower: &Address) -> Result<u64, CreditL
 /// Pagination contract for consumers:
 /// - `start`: zero-indexed global loan offset for the borrower.
 /// - `limit`: maximum number of loan IDs to retrieve in one call.
+///
 /// Indexes are stored in pages of size `PAGE_SIZE` (32 loan IDs per page key).
 pub fn get_user_loan_ids_paginated(
     env: &Env,

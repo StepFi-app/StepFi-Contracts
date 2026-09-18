@@ -58,7 +58,8 @@ pub fn emit_proposal_created(env: &Env, id: u64, proposer: &Address) {
 }
 
 pub fn emit_proposal_approved(env: &Env, id: u64, signer: &Address, approvals: u32) {
-    env.events().publish((PROP_APPROVED, signer), (id, approvals));
+    env.events()
+        .publish((PROP_APPROVED, signer), (id, approvals));
 }
 
 pub fn emit_proposal_executed(env: &Env, id: u64) {

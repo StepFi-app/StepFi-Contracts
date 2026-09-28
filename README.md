@@ -1,149 +1,176 @@
-# StepFi Contracts
+<div align="center">
 
-> Soroban smart contracts powering the StepFi BNPL protocol on Stellar — open-source, auditable, and built for learners.
+# StepFi-Contracts
 
-## Live on Stellar Testnet ✅
+**Soroban smart contracts powering StepFi — reputation-based, collateral-light credit on Stellar.**
 
-All 5 contracts are deployed, initialized, and active on Stellar testnet.
+Credit, reputation, and a shared liquidity pool, enforced on-chain in Rust.
 
-| Contract | Contract ID | Explorer |
-|---|---|---|
-| Creditline | `CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X` | [View ↗](https://stellar.expert/explorer/testnet/contract/CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X) |
-| Reputation | `CC3BO57ZRJGA63QJBIBSOMI25Z3X2I5CYTARYRAUXUAILX6L3OWBL5SB` | [View ↗](https://stellar.expert/explorer/testnet/contract/CC3BO57ZRJGA63QJBIBSOMI25Z3X2I5CYTARYRAUXUAILX6L3OWBL5SB) |
-| Liquidity Pool | `CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT` | [View ↗](https://stellar.expert/explorer/testnet/contract/CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT) |
-| Vendor Registry | `CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L` | [View ↗](https://stellar.expert/explorer/testnet/contract/CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L) |
-| Parameters | `CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B` | [View ↗](https://stellar.expert/explorer/testnet/contract/CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B) |
+[![Contracts CI](https://github.com/StepFi-app/StepFi-Contracts/actions/workflows/contracts-ci.yml/badge.svg)](https://github.com/StepFi-app/StepFi-Contracts/actions/workflows/contracts-ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Soroban](https://img.shields.io/badge/Soroban-SDK-7D00FF?logo=stellar&logoColor=white)](https://soroban.stellar.org)
+[![Network](https://img.shields.io/badge/network-testnet-blue.svg)](https://stellar.expert/explorer/testnet)
+[![Tests](https://img.shields.io/badge/tests-420-brightgreen.svg)](#-build--test)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-Deployer: `GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF`
-Deployed: 2026-05-11 (Creditline redeployed 2026-05-12)
-Full deployment details: [`contracts/deployed-testnet.json`](./contracts/deployed-testnet.json)
+[What is StepFi](#-what-is-stepfi) · [Contracts](#-the-contracts) · [How credit works](#-how-credit-works) · [Deployments](#-deployed-on-testnet) · [Build](#-build--test) · [Roadmap](#-roadmap)
 
----
-
-## Architecture
-
-StepFi uses 5 Soroban smart contracts that work together:
-
-```
-┌─────────────────────────────────────────────────┐
-│                 StepFi Protocol                  │
-├──────────────┬──────────────┬────────────────────┤
-│  Creditline  │  Reputation  │  Liquidity Pool    │
-│  (core BNPL) │  (scoring)   │  (sponsor capital) │
-├──────────────┴──────────────┴────────────────────┤
-│      Vendor Registry   │   Parameters            │
-│      (vendor data)     │   (protocol config)     │
-└─────────────────────────────────────────────────┘
-```
-
-### Contract Responsibilities
-
-**Creditline** — The core lending contract:
-- `create_loan()` — initiates a new BNPL loan
-- `repay_installment()` — processes individual installment payments
-- `approve_loan()` — transitions loan from Pending → Active
-- Tracks LoanType (Standard, LearnerInstallment)
-- Per-installment paid/unpaid tracking with timestamps
-- Reentrancy guard on all mutating functions
-
-**Reputation** — On-chain credit scoring:
-- `get_score()` — returns borrower score (0-100)
-- `update_score()` — updates score after payment events
-- Score determines interest rate and credit limit:
-  - 0-59 (Starter): 10% APR, $1,000 limit
-  - 60-74 (Bronze): 8% APR, $2,500 limit
-  - 75-89 (Silver): 6% APR, $5,000 limit
-  - 90-100 (Gold): 4% APR, $10,000 limit
-
-**Liquidity Pool** — Sponsor capital management:
-- `deposit()` — sponsors add capital to the pool
-- `withdraw()` — sponsors withdraw with yield
-- `get_pool_info()` — returns pool stats
-
-**Vendor Registry** — Learning vendor management:
-- Stores verified vendor profiles
-- Tracks vendor categories (School, Bootcamp, Electronics)
-- Admin-controlled vendor approval
-
-**Parameters** — Protocol governance:
-- Base interest rates, penalty amounts
-- Minimum guarantee percent (20%)
-- Minimum reputation threshold (50)
-- Grace period and large loan thresholds
+</div>
 
 ---
 
-## Getting Started
+## 📖 What is StepFi?
+
+StepFi extends small, uncollateralized loans to learners and interns based on an **on-chain reputation score** rather than assets. Sponsors fund a shared **liquidity pool**; borrowers draw loans sized and priced by their reputation, repay in installments, and grow their score — unlocking larger limits and lower rates. Vendors are paid directly and tracked in a registry. Everything that touches money or trust is enforced by the contracts in this repository.
+
+## 🗺️ Where it fits
+
+This repo is the **settlement and trust layer** of the StepFi protocol. Clients ([StepFi-App](https://github.com/StepFi-app/StepFi-App), [StepFi-Web](https://github.com/StepFi-app/StepFi-Web)) and the [StepFi-API](https://github.com/StepFi-app/StepFi-API) build and submit transactions to these contracts on Stellar.
+
+<div align="center">
+
+<img src="./docs/architecture.svg" alt="StepFi system architecture — StepFi-Contracts highlighted" width="900" />
+
+</div>
+
+## 🧩 The contracts
+
+A 6-crate Cargo workspace under [`contracts/`](contracts):
+
+| Contract | Responsibility | Status |
+|----------|----------------|--------|
+| **Creditline** | Loan lifecycle — request, approve, fund, repay (per-installment), late fees, grace period, default, cancel | ✅ deployed |
+| **Reputation** | 0–100 score, boosts, updater-gated writes; drives limits & APR | ✅ deployed |
+| **Liquidity Pool** | Sponsor deposits, share pricing, loan funding, repayment/interest distribution, loss absorption, outflow & merchant-exposure caps | ✅ deployed |
+| **Vendor Registry** | Vendor lifecycle (register → approve → suspend/deactivate) and active-status checks | ✅ deployed |
+| **Parameters** | On-chain governance — protocol parameters + multisig proposal/approval/execution | ✅ deployed |
+| **Vouching** | Mentor vouches that boost reputation, with on-chain expiry | 🚧 pending deployment |
+
+## 💳 How credit works
+
+A borrower's **reputation score (0–100)** determines both their credit limit and interest rate. The mapping is enforced in the Creditline contract:
+
+| Score | APR | Credit limit |
+|------:|----:|-------------:|
+| 90–100 | 4% | 10,000 |
+| 75–89 | 6% | 5,000 |
+| 60–74 | 8% | 2,500 |
+| below 60 | 10% | 1,000 |
+
+- A minimum score (default **50**) is required to open a loan.
+- Loans require a **guarantee** (default 20% of principal) and repay in installments; paying on time raises the score, defaulting applies a penalty.
+- **Late fees** accrue per overdue installment; an optional grace period is governable.
+- These brackets are compile-time constants; the penalty/threshold/fee parameters and an optional base interest rate are adjustable through the **Parameters** contract's multisig governance.
+
+## 🔗 How the contracts interact
+
+```
+Sponsor ──deposit──▶ Liquidity Pool ──fund_loan──▶ Creditline ──pay──▶ Vendor
+                                    ◀─repayment──┘
+Creditline ──reads/updates──▶ Reputation   (score → limit & APR)
+Creditline ──validates──────▶ Vendor Registry (active merchants only)
+Parameters ──governs────────▶ all contracts (thresholds, fees, caps)
+Vouching ──boosts───────────▶ Reputation
+```
+
+Creditline propagates reputation-call failures so loan state and reputation never diverge; the Liquidity Pool caps per-transaction outflow and per-merchant exposure.
+
+## 🚀 Deployed on testnet
+
+Canonical addresses from [`contracts/deployed-testnet.json`](contracts/deployed-testnet.json) — network **testnet**, deployed 2026-05-11 (Creditline redeployed 2026-05-12), last verified 2026-07-17.
+
+| Contract | Address (click to explore) |
+|----------|----------------------------|
+| Parameters | [`CCAE72SK…IJ5B`](https://stellar.expert/explorer/testnet/contract/CCAE72SKYX55C5L56DBEFIMFVXRUIJY6JYLBREHEWRFNOW7AX5NBIJ5B) |
+| Reputation | [`CC3BO57Z…L5SB`](https://stellar.expert/explorer/testnet/contract/CC3BO57ZRJGA63QJBIBSOMI25Z3X2I5CYTARYRAUXUAILX6L3OWBL5SB) |
+| Vendor Registry | [`CCZ6T6NY…AU2L`](https://stellar.expert/explorer/testnet/contract/CCZ6T6NYCDNI26VGTPXKKWQDR7JCIZZ24LCEG4MMYHZJAG6BPWIVAU2L) |
+| Liquidity Pool | [`CACKE7ML…S2BT`](https://stellar.expert/explorer/testnet/contract/CACKE7ML2BTOAGQTAAW5NEARHCFX4PXXKGEO6GMU6NHFBVYQFZRJS2BT) |
+| Creditline | [`CAQDHYG3…BS3X`](https://stellar.expert/explorer/testnet/contract/CAQDHYG3TALPNXG466SZUMJEPOI7VYV732LPFF3GHE4ASPBCNMIQBS3X) |
+| Vouching | pending deployment |
+
+- **Deployer:** `GCOYDYSEHRCFWGXUCMPSQ3ODEY2LGMBSVKKCOFH4NRIK4DEEDSETH7BF`
+- **Settlement token:** native XLM via SAC `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`
+
+> ⚠️ An unrelated 2026-06-23 deployment from an unrecognized key is recorded as `orphanedDeployment` / **abandoned — do not use**. Only the addresses above are canonical.
+
+## 🛡️ Security & governance
+
+- **`require_auth()`** guards every mutating entry point; **reentrancy guards** across contracts.
+- **Timelocked WASM upgrades** — propose → wait `upgrade_delay` → execute, with hash matching and version overflow checks.
+- **Multisig governance** (Parameters) hardened against stale approvals, duplicate signatures, and admin bypass.
+- **Emergency pause/unpause** on Creditline and Liquidity Pool.
+- **Economic safeguards** — first-depositor share-price inflation mitigation, outflow & merchant-exposure caps, guarantee handling on cancel/default.
+- `overflow-checks = true` and `panic = "abort"` in release; `cargo fmt` + `clippy -D warnings` enforced in CI.
+
+Each contract exposes a typed `#[contracterror]` enum (e.g. `CreditLineError`, `LiquidityPoolError`, `ParametersError`) for precise, non-panicking failure codes. See [VERIFICATION.md](VERIFICATION.md) for build/verification details.
+
+## 🔧 Build & test
 
 ### Prerequisites
-- Rust + wasm32-unknown-unknown target
-- Stellar CLI v22+
+
+| Tool | Notes |
+|------|-------|
+| Rust (stable) | via [rustup](https://rustup.rs) |
+| `wasm32-unknown-unknown` | `rustup target add wasm32-unknown-unknown` |
+| Stellar CLI | optional, for deployment |
 
 ```bash
-# Install Rust target
-rustup target add wasm32-unknown-unknown
+git clone https://github.com/StepFi-app/StepFi-Contracts.git
+cd StepFi-Contracts
 
-# Install Stellar CLI
-curl -L https://github.com/stellar/stellar-cli/releases/download/v22.8.1/stellar-cli-x86_64-unknown-linux-gnu.tar.gz \
-  | tar -xz -C ~/.cargo/bin/
+cargo build                                              # build the workspace
+cargo test                                               # run the test suite
+cargo fmt --all -- --check                               # formatting gate
+cargo clippy --workspace --all-targets -- -D warnings    # lint gate
 ```
 
-### Build
+A [`Makefile`](Makefile) provides shortcuts, and [`scripts/deploy-testnet.sh`](scripts/deploy-testnet.sh) deploys and initializes the full set to testnet.
 
-```bash
-# Build all contracts
-cargo build --target wasm32-unknown-unknown --release
+### Test coverage
 
-# Run all tests
-cargo test --manifest-path contracts/creditline-contract/Cargo.toml
-```
+| Crate | Tests |
+|-------|------:|
+| Creditline | 148 |
+| Liquidity Pool | 125 |
+| Reputation | 60 |
+| Parameters | 34 |
+| Vouching | 27 |
+| Vendor Registry | 26 |
+| **Total** | **420** |
 
-### Test Results
+## 🔄 CI/CD
 
-```
-test result: ok. 93 passed; 0 failed; 4 ignored
-```
+[`contracts-ci.yml`](.github/workflows/contracts-ci.yml) runs on every push/PR: `cargo fmt --check`, builds each dependency WASM, `clippy -D warnings`, workspace build, and `cargo test --locked` — a **required check on `main`**. Tagging `v*` triggers [`release.yml`](.github/workflows/release.yml): builds all contract WASMs, emits SHA-256 hashes, and publishes a GitHub Release.
 
-### Deploy to Testnet
+## 🛣️ Roadmap
 
-```bash
-# Generate deployer keypair
-stellar keys generate stepfi-deployer --network testnet
-stellar keys fund stepfi-deployer --network testnet
+| Milestone | Status |
+|-----------|--------|
+| Five core contracts deployed to testnet | ✅ |
+| Multisig governance + timelocked upgrades | ✅ |
+| Liquidity-pool economic-attack hardening | ✅ |
+| Per-installment late fees + emergency pause | ✅ |
+| `fmt` + `clippy` CI gate | ✅ |
+| Vouching contract deployment | 🚧 |
+| Security audit & mainnet readiness | 🗺️ |
 
-# Run deploy script
-chmod +x scripts/deploy-testnet.sh
-./scripts/deploy-testnet.sh
-```
+See [ROADMAP.md](ROADMAP.md) for the detailed protocol roadmap.
 
----
+## 🤝 Contributing
 
-## Contract Security
+This repo holds **Soroban contracts only** — changes belong in [`contracts/`](contracts) (or [`scripts/`](scripts)). Keep `cargo build`, `cargo test`, `fmt`, and `clippy` green, and add tests for every new function. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- All mutating functions require `require_auth()`
-- Reentrancy guard on loan operations
-- TTL extension on every persistent storage write
-- Checked arithmetic on all balance operations
-- No `unwrap()` on user-facing paths (hardening in progress)
+## 🌐 The StepFi protocol
 
----
+| Repo | Role |
+|------|------|
+| **StepFi-Contracts** (this repo) | Soroban smart contracts — credit, reputation, liquidity |
+| [StepFi-App](https://github.com/StepFi-app/StepFi-App) | Learner mobile client (Expo / React Native) |
+| [StepFi-API](https://github.com/StepFi-app/StepFi-API) | Backend: auth/JWT, orchestration, jobs |
+| [StepFi-Web](https://github.com/StepFi-app/StepFi-Web) | Marketing site & web dashboard |
+| [StepFi-Docs](https://github.com/StepFi-app/StepFi-Docs) | Protocol documentation |
 
-## Contributing
-
-Read [`context/code-standards.md`](./context/code-standards.md) before contributing.
-
-Checklist for every PR:
-- [ ] `cargo build` passes with zero errors
-- [ ] `cargo test` — all 93 existing tests still pass
-- [ ] `require_auth()` is first line of every mutating function
-- [ ] `extend_ttl()` called after every persistent storage write
-- [ ] New tests written for any new function
-
-Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/StepFi-app/StepFi-Contracts/issues)
-
----
-
-## Contributors
+## 🏅 Contributors
 
 <!-- LEADERBOARD_START -->
 ## 🏆 Top 5 Contributors
@@ -199,10 +226,9 @@ Browse open issues: [StepFi-app/StepFi-Contracts/issues](https://github.com/Step
 
 <!-- LEADERBOARD_END -->
 
----
+## 📄 License
 
-## License
+Released under the [MIT License](./LICENSE).
 
-MIT — see [LICENSE](./LICENSE)
 
-Part of the [StepFi Protocol](https://github.com/StepFi-app) · Built on [Stellar](https://stellar.org) · Powered by [Soroban](https://soroban.stellar.org)
+

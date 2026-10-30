@@ -140,7 +140,7 @@ A [`Makefile`](Makefile) provides shortcuts, and [`scripts/deploy-testnet.sh`](s
 
 ## 🔄 CI/CD
 
-[`contracts-ci.yml`](.github/workflows/contracts-ci.yml) runs on every push/PR: `cargo fmt --check`, builds each dependency WASM, `clippy -D warnings`, workspace build, and `cargo test --locked` — a **required check on `main`**. Tagging `v*` triggers [`release.yml`](.github/workflows/release.yml): builds all contract WASMs, emits SHA-256 hashes, and publishes a GitHub Release.
+[`contracts-ci.yml`](.github/workflows/contracts-ci.yml) runs on every push/PR: `cargo fmt --check`, builds each dependency WASM, `clippy -D warnings`, workspace build, `cargo test --locked`, and code coverage measurement via `cargo-llvm-cov` which uploads `lcov.info` as the `contracts-coverage` build artifact (reproducible locally via `make coverage`) — a **required check on `main`**. Tagging `v*` triggers [`release.yml`](.github/workflows/release.yml): builds all contract WASMs, emits SHA-256 hashes, and publishes a GitHub Release.
 
 ## 🛣️ Roadmap
 

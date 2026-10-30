@@ -21,7 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -33,6 +33,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'contracts/**/*.rs', 'contracts/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -65,3 +68,17 @@ jobs:
       - name: Run tests
         run: |
           cargo test --locked 2>&1
+
+      - name: Generate code coverage report
+        env:
+          CARGO_LLVM_COV_FORMAT: lcov
+        run: |
+          cargo llvm-cov --workspace --locked --${CARGO_LLVM_COV_FORMAT} --output-path lcov.info --summary-only
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-coverage
+          path: lcov.info
+          retention-days: 14
+          if-no-files-found: error
